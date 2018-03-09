@@ -7,6 +7,12 @@ from taxcalc.growfactors import Growfactors
 from taxcalc.policy import Policy
 
 class ParametersBaseOGUSA(ParametersBase):
+    """
+    Quick fix so that the path pulled from __file__ is relative to this file
+    and not the `ParametersBase` file located int he conda installation path
+
+    This allows us to read the `ogusa/default_parameters.json` file
+    """
 
     @classmethod
     def _params_dict_from_json_file(cls):
