@@ -28,5 +28,20 @@
         "out_of_range_maxmsg": "",
         "out_of_range_action": "stop",
         "compatible_data": {"puf": true, "cps": true}
+    },
+    "ltilde": {
+        "long_name": "",
+        "description": "",
+        "notes": "",
+        "col_var": "",
+        "col_label": "",
+        "boolean_value": false,
+        "integer_value": false,
+        "value": [1.0],
+        "range": {"min": 0, "max": 2},
+        "out_of_range_minmsg": "",
+        "out_of_range_maxmsg": "",
+        "out_of_range_action": "stop",
+        "compatible_data": {"puf": true, "cps": true}
     }
 }

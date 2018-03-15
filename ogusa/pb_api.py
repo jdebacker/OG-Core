@@ -1,10 +1,13 @@
 import json
 import os
 import collections as collect
+import six
 
 from taxcalc.parameters import ParametersBase
 from taxcalc.growfactors import Growfactors
 from taxcalc.policy import Policy
+
+import ogusa
 
 class ParametersBaseOGUSA(ParametersBase):
     """
@@ -43,6 +46,25 @@ class ParametersBaseOGUSA(ParametersBase):
                 cls.DEFAULTS_FILENAME)  # pragma: no cover
         return params_dict
 
+    def set_default_vals(self, known_years=999999):
+        """
+        Called by initialize method and from some subclass methods.
+        """
+        if hasattr(self, '_vals'):
+            for name, data in self._vals.items():
+                if not isinstance(name, six.string_types):
+                    msg = 'parameter name {} is not a string'
+                    raise ValueError(msg.format(name))
+                integer_values = data.get('integer_value', None)
+                values = data.get('value', None)
+                if values:
+                    # removed parameter extension from start year to end of
+                    # budget window. Currently this stores the default value
+                    # as a list object of length 1
+                    setattr(self, name, values)
+        self.set_year(self._start_year)
+
+
 class Specs(ParametersBaseOGUSA):
     DEFAULTS_FILENAME = 'default_parameters.json'
     JSON_START_YEAR = 2013  # remains the same unless earlier data added
@@ -63,19 +85,19 @@ class Specs(ParametersBaseOGUSA):
             raise ValueError('num_years cannot be less than one')
 
         # does cheap calculations such as growth
-        self.initialize(initial_estimates=False)
+        self.initialize(start_year, num_years, initial_estimates=False)
 
         self.reform_warnings = ''
         self.reform_errors = ''
         self._ignore_errors = False
 
-    def initialize(self, initial_estimates=False):
+    def initialize(self, start_year, num_years, initial_estimates=False):
         """
         ParametersBase reads JSON file and sets attributes to self
         Next call self.ogusa_set_default_vals for further initialization
         If estimate_params is true, then run long running estimation routines
         """
-        super(Specs, self).initialize()
+        super(Specs, self).initialize(start_year, num_years)
         self.ogusa_set_default_vals()
         if initial_estimates:
             self.estimate_parameters()
@@ -84,14 +106,23 @@ class Specs(ParametersBaseOGUSA):
         """
         Does cheap calculations such as calculating/applying growth rates
         """
-        raise NotImplementedError()
+        self.b_ellipse, self.upsilon = ogusa.elliptical_u_est.estimation(
+            self.frisch[0],
+            self.ltilde[0]
+        )
+        # call some more functions
 
-    def esitimate_parameters(self):
+    def esitimate_parameters(self, data=None, reform={}):
         """
         Runs long running parameter estimatation routines such as estimating
         tax function parameters
         """
-        raise NotImplementedError()
+        # self.tax_func_estimate = tax_func_estimate(self.BW, self.S, self.starting_age, self.ending_age,
+        #                                 self.start_year, self.baseline,
+        #                                 self.analytical_mtrs, self.age_specific,
+        #                                 reform=None, data=data)
+        pass
+
 
     def implement_reform(self, specs):
         """
@@ -159,3 +190,4 @@ def reform_warnings_errors(user_mods):
 
 if __name__ == '__main__':
     specs = Specs()
+    print(specs.__dict__)
