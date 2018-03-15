@@ -43,7 +43,6 @@ class ParametersBaseOGUSA(ParametersBase):
                 cls.DEFAULTS_FILENAME)  # pragma: no cover
         return params_dict
 
-
 class Specs(ParametersBaseOGUSA):
     DEFAULTS_FILENAME = 'default_parameters.json'
     JSON_START_YEAR = 2013  # remains the same unless earlier data added
@@ -53,19 +52,46 @@ class Specs(ParametersBaseOGUSA):
 
     def __init__(self,
                  start_year=JSON_START_YEAR,
-                 num_years=DEFAULT_NUM_YEARS):
+                 num_years=DEFAULT_NUM_YEARS,
+                 initial_estimates=False):
         super(Specs, self).__init__()
 
+        # reads in default data
         self._vals = self._params_dict_from_json_file()
 
         if num_years < 1:
             raise ValueError('num_years cannot be less than one')
 
-        self.initialize(start_year, num_years)
+        # does cheap calculations such as growth
+        self.initialize(initial_estimates=False)
 
         self.reform_warnings = ''
         self.reform_errors = ''
         self._ignore_errors = False
+
+    def initialize(self, initial_estimates=False):
+        """
+        ParametersBase reads JSON file and sets attributes to self
+        Next call self.ogusa_set_default_vals for further initialization
+        If estimate_params is true, then run long running estimation routines
+        """
+        super(Specs, self).initialize()
+        self.ogusa_set_default_vals()
+        if initial_estimates:
+            self.estimate_parameters()
+
+    def ogusa_set_default_vals(self):
+        """
+        Does cheap calculations such as calculating/applying growth rates
+        """
+        raise NotImplementedError()
+
+    def esitimate_parameters(self):
+        """
+        Runs long running parameter estimatation routines such as estimating
+        tax function parameters
+        """
+        raise NotImplementedError()
 
     def implement_reform(self, specs):
         """
