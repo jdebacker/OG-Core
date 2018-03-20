@@ -2,72 +2,18 @@ import json
 import os
 import collections as collect
 import six
+import numpy as np
 
-from taxcalc.parameters import ParametersBase
 from taxcalc.growfactors import Growfactors
 from taxcalc.policy import Policy
 
 import ogusa
-
-class ParametersBaseOGUSA(ParametersBase):
-    """
-    Quick fix so that the path pulled from __file__ is relative to this file
-    and not the `ParametersBase` file located int he conda installation path
-
-    This allows us to read the `ogusa/default_parameters.json` file
-    """
-
-    @classmethod
-    def _params_dict_from_json_file(cls):
-        """
-        Read DEFAULTS_FILENAME file and return complete dictionary.
-
-        Parameters
-        ----------
-        nothing: void
-
-        Returns
-        -------
-        params: dictionary
-            containing complete contents of DEFAULTS_FILENAME file.
-        """
-        if cls.DEFAULTS_FILENAME is None:
-            msg = 'DEFAULTS_FILENAME must be overridden by inheriting class'
-            raise NotImplementedError(msg)
-        path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
-                            cls.DEFAULTS_FILENAME)
-        if os.path.exists(path):
-            with open(path) as pfile:
-                params_dict = json.load(pfile,
-                                        object_pairs_hook=collect.OrderedDict)
-        else:
-            # cannot call read_egg_ function in unit tests
-            params_dict = read_egg_json(
-                cls.DEFAULTS_FILENAME)  # pragma: no cover
-        return params_dict
-
-    def set_default_vals(self, known_years=999999):
-        """
-        Called by initialize method and from some subclass methods.
-        """
-        if hasattr(self, '_vals'):
-            for name, data in self._vals.items():
-                if not isinstance(name, six.string_types):
-                    msg = 'parameter name {} is not a string'
-                    raise ValueError(msg.format(name))
-                integer_values = data.get('integer_value', None)
-                values = data.get('value', None)
-                if values:
-                    # removed parameter extension from start year to end of
-                    # budget window. Currently this stores the default value
-                    # as a list object of length 1
-                    setattr(self, name, values)
-        self.set_year(self._start_year)
+from ogusa.parametersbase import ParametersBase
 
 
-class Specs(ParametersBaseOGUSA):
+class Specs(ParametersBase):
     DEFAULTS_FILENAME = 'default_parameters.json'
-    JSON_START_YEAR = 2013  # remains the same unless earlier data added
+    JSON_START_YEAR = 2017  # remains the same unless earlier data added
     LAST_KNOWN_YEAR = 2017  # last year for which indexed param vals are known
     LAST_BUDGET_YEAR = 2027  # increases by one every calendar year
     DEFAULT_NUM_YEARS = LAST_BUDGET_YEAR - JSON_START_YEAR + 1
@@ -123,22 +69,54 @@ class Specs(ParametersBaseOGUSA):
         #                                 reform=None, data=data)
         pass
 
-
-    def implement_reform(self, specs):
+    def default_specs(self):
         """
-        Follows Policy.implement_reform
-
-        This is INCOMPLETE and needs to be filled in. This is the place
-        to call parameter validating functions
+        Return Policy object same as self except with current-law policy.
         """
+        startyear = self.start_year
+        defaults = Specs(start_year=startyear, num_years=self.num_years)
+        defaults.set_year(self.current_year)
+        return defaults
 
-        self._validate_parameter_names_types(specs)
+    def implement_reform(self, reform):
+        # check that all reform dictionary keys are integers
+        # check that all reform dictionary keys are integers
+        if not isinstance(reform, dict):
+            raise ValueError('ERROR: YYYY PARAM reform is not a dictionary')
+        if not reform:
+            return  # no reform to implement
+        reform_years = sorted(list(reform.keys()))
+        for year in reform_years:
+            if not isinstance(year, int):
+                msg = 'ERROR: {} KEY {}'
+                details = 'KEY in reform is not an integer calendar year'
+                raise ValueError(msg.format(year, details))
+        # check range of remaining reform_years
+        first_reform_year = min(reform_years)
+        if first_reform_year < self.start_year:
+            msg = 'ERROR: {} YEAR reform provision in YEAR < start_year={}'
+            raise ValueError(msg.format(first_reform_year, self.start_year))
+        if first_reform_year < self.current_year:
+            msg = 'ERROR: {} YEAR reform provision in YEAR < current_year={}'
+            raise ValueError(msg.format(first_reform_year, self.current_year))
+        last_reform_year = max(reform_years)
+        if last_reform_year > self.end_year:
+            msg = 'ERROR: {} YEAR reform provision in YEAR > end_year={}'
+            raise ValueError(msg.format(last_reform_year, self.end_year))
+        # validate reform parameter names and types
+        self._validate_parameter_names_types(reform)
         if not self._ignore_errors and self.reform_errors:
             raise ValueError(self.reform_errors)
-
+        # implement the reform year by year
+        precall_current_year = self.current_year
+        reform_parameters = set()
+        for year in reform_years:
+            self.set_year(year)
+            reform_parameters.update(reform[year].keys())
+            self._update({year: reform[year]})
+        self.set_year(precall_current_year)
+        # validate reform parameter values
         self._validate_parameter_values(reform_parameters)
-
-        raise NotImplementedError()
 
     def read_json_parameters_object(self, parameters):
         raise NotImplementedError()
@@ -147,13 +125,159 @@ class Specs(ParametersBaseOGUSA):
         """
         hopefully can use taxcalc.Policy._validate_parameter_values here
         """
-        raise NotImplementedError()
+        # pylint: disable=too-many-branches,too-many-nested-blocks
+        data_names = set(self._vals.keys())
+        for year in sorted(reform.keys()):
+            for name in reform[year]:
+                if name.endswith('_cpi'):
+                    if isinstance(reform[year][name], bool):
+                        pname = name[:-4]  # root parameter name
+                        if pname not in data_names:
+                            msg = '{} {} unknown parameter name'
+                            self.reform_errors += (
+                                'ERROR: ' + msg.format(year, name) + '\n'
+                            )
+                        else:
+                            # check if root parameter is cpi inflatable
+                            if not self._vals[pname]['cpi_inflatable']:
+                                msg = '{} {} parameter is not cpi inflatable'
+                                self.reform_errors += (
+                                    'ERROR: ' + msg.format(year, pname) + '\n'
+                                )
+                    else:
+                        msg = '{} {} parameter is not true or false'
+                        self.reform_errors += (
+                            'ERROR: ' + msg.format(year, name) + '\n'
+                        )
+                else:  # if name does not end with '_cpi'
+                    if name not in data_names:
+                        msg = '{} {} unknown parameter name'
+                        self.reform_errors += (
+                            'ERROR: ' + msg.format(year, name) + '\n'
+                        )
+                    else:
+                        # check parameter value type
+                        bool_type = self._vals[name]['boolean_value']
+                        int_type = self._vals[name]['integer_value']
+                        assert isinstance(reform[year][name], list)
+                        pvalue = reform[year][name][0]
+                        if isinstance(pvalue, list):
+                            scalar = False  # parameter value is a list
+                        else:
+                            scalar = True  # parameter value is a scalar
+                            pvalue = [pvalue]  # make scalar a single-item list
+                        for idx in range(0, len(pvalue)):
+                            if scalar:
+                                pname = name
+                            else:
+                                pname = '{}_{}'.format(name, idx)
+                            pvalue_boolean = (
+                                isinstance(pvalue[idx], bool) or
+                                (isinstance(pvalue[idx], int) and
+                                 (pvalue[idx] == 0 or pvalue[idx] == 1)) or
+                                (isinstance(pvalue[idx], float) and
+                                 (pvalue[idx] == 0.0 or pvalue[idx] == 1.0))
+                            )
+                            if bool_type:
+                                if not pvalue_boolean:
+                                    msg = '{} {} value {} is not boolean'
+                                    self.reform_errors += (
+                                        'ERROR: ' +
+                                        msg.format(year, pname, pvalue[idx]) +
+                                        '\n'
+                                    )
+                            elif int_type:
+                                if not isinstance(pvalue[idx], int):
+                                    msg = '{} {} value {} is not integer'
+                                    self.reform_errors += (
+                                        'ERROR: ' +
+                                        msg.format(year, pname, pvalue[idx]) +
+                                        '\n'
+                                    )
+                            else:  # param is neither bool_type nor int_type
+                                if not isinstance(pvalue[idx], (float, int)):
+                                    msg = '{} {} value {} is not a number'
+                                    self.reform_errors += (
+                                        'ERROR: ' +
+                                        msg.format(year, pname, pvalue[idx]) +
+                                        '\n'
+                                    )
+
 
     def _validate_parameter_values(self, parameters_set):
         """
-        hopefully can use taxcalc.Policy._validate_parameter_values here
+        Check values of parameters in specified parameter_set using
+        range information from the current_law_policy.json file.
         """
-        raise NotImplementedError()
+        # pylint: disable=too-many-locals
+        # pylint: disable=too-many-branches
+        # pylint: disable=too-many-nested-blocks
+        rounding_error = 100.0
+        # above handles non-rounding of inflation-indexed parameter values
+        clp = self.default_specs()
+        parameters = sorted(parameters_set)
+        syr = Policy.JSON_START_YEAR
+        for pname in parameters:
+            if pname.endswith('_cpi'):
+                continue  # *_cpi parameter values validated elsewhere
+            pvalue = getattr(self, pname)
+            for vop, vval in self._vals[pname]['range'].items():
+                if isinstance(vval, six.string_types):
+                    print('up', pname, vop, vval)
+                    if vval == 'default':
+                        vvalue = getattr(clp, pname)
+                        if vop == 'min':
+                            vvalue -= rounding_error
+                        # the follow branch can never be reached, so it
+                        # is commented out because it can never be tested
+                        # (see test_range_infomation in test_policy.py)
+                        # --> elif vop == 'max':
+                        # -->    vvalue += rounding_error
+                    else:
+                        vvalue = self.simple_eval(vval)
+                else:
+                    vvalue = np.full(pvalue.shape, vval)
+                print(pvalue, vvalue)
+                assert pvalue.shape == vvalue.shape
+                assert len(pvalue.shape) <= 2
+                if len(pvalue.shape) == 2:
+                    scalar = False  # parameter value is a list
+                else:
+                    scalar = True  # parameter value is a scalar
+                for idx in np.ndindex(pvalue.shape):
+                    out_of_range = False
+                    if vop == 'min' and pvalue[idx] < vvalue[idx]:
+                        out_of_range = True
+                        msg = '{} {} value {} < min value {}'
+                        extra = self._vals[pname]['out_of_range_minmsg']
+                        if extra:
+                            msg += ' {}'.format(extra)
+                    if vop == 'max' and pvalue[idx] > vvalue[idx]:
+                        out_of_range = True
+                        msg = '{} {} value {} > max value {}'
+                        extra = self._vals[pname]['out_of_range_maxmsg']
+                        if extra:
+                            msg += ' {}'.format(extra)
+                    if out_of_range:
+                        action = self._vals[pname]['out_of_range_action']
+                        if scalar:
+                            name = pname
+                        else:
+                            name = '{}_{}'.format(pname, idx[1])
+                            if extra:
+                                msg += '_{}'.format(idx[1])
+                        if action == 'warn':
+                            self.reform_warnings += (
+                                'WARNING: ' + msg.format(idx[0] + syr, name,
+                                                         pvalue[idx],
+                                                         vvalue[idx]) + '\n'
+                            )
+                        if action == 'stop':
+                            self.reform_errors += (
+                                'ERROR: ' + msg.format(idx[0] + syr, name,
+                                                       pvalue[idx],
+                                                       vvalue[idx]) + '\n'
+                            )
 
 
 # copied from taxcalc.tbi.tbi.reform_errors_warnings--probably needs further
@@ -190,4 +314,14 @@ def reform_warnings_errors(user_mods):
 
 if __name__ == '__main__':
     specs = Specs()
-    print(specs.__dict__)
+    reform = {
+        2017: {
+            "tG1": [20],
+        },
+        2017: {
+            "T": [30]
+        }
+    }
+    specs.implement_reform(reform)
+    print('errors', specs.reform_errors)
+    print('warnings', specs.reform_warnings)
