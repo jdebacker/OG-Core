@@ -43,8 +43,7 @@ class ParametersBase(object):
         if start_year is None:
             params = cls._params_dict_from_json_file()
         else:
-            nyrs = start_year - cls.JSON_START_YEAR + 1
-            ppo = cls(num_years=nyrs)
+            ppo = cls(start_year)
             ppo.set_year(start_year)
             params = getattr(ppo, '_vals')
             params = ParametersBase._revised_default_data(params, start_year,
@@ -321,14 +320,6 @@ class ParametersBase(object):
 
             {2019: {"_EITC_ps_MarriedJ":[[8000, 8500, 9000, 9500]]}}
 
-        Notice the pair of double square brackets around the four values
-        for 2019.  The one-dimensional parameters above require only a pair
-        of single square brackets.
-
-        To model a change in behavior substitution effect, a year_mods dict
-        example would be::
-
-            {2014: {'_BE_sub': [0.2, 0.3]}}
         """
         # check YEAR value in the single YEAR:MODS dictionary parameter
         if not isinstance(year_mods, dict):
@@ -373,8 +364,6 @@ class ParametersBase(object):
             self._vals[pname]['cpi_inflated'] = pindexed  # remember status
             cval = getattr(self, pname, None)
             pvalues = [cval[year - self.start_year]]
-            index_rates = self._indexing_rates_for_update(name, year,
-                                                          num_years_to_expand)
             integer_values = self._vals[pname]['integer_value']
             nval = self._expand_array(pvalues, integer_values)
             cval[(year - self.start_year):] = nval

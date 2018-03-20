@@ -13,17 +13,16 @@ from ogusa.parametersbase import ParametersBase
 
 class Specs(ParametersBase):
     DEFAULTS_FILENAME = 'default_parameters.json'
-    JSON_START_YEAR = 2017  # remains the same unless earlier data added
-    LAST_KNOWN_YEAR = 2017  # last year for which indexed param vals are known
     LAST_BUDGET_YEAR = 2027  # increases by one every calendar year
-    DEFAULT_NUM_YEARS = LAST_BUDGET_YEAR - JSON_START_YEAR + 1
 
     def __init__(self,
-                 start_year=JSON_START_YEAR,
-                 num_years=DEFAULT_NUM_YEARS,
+                 start_year,
+                 num_years=None,
                  initial_estimates=False):
         super(Specs, self).__init__()
-
+        self.start_year = start_year
+        if num_years is None:
+            num_years = Specs.LAST_BUDGET_YEAR - self.start_year
         # reads in default data
         self._vals = self._params_dict_from_json_file()
 
@@ -123,85 +122,64 @@ class Specs(ParametersBase):
 
     def _validate_parameter_names_types(self, reform):
         """
-        hopefully can use taxcalc.Policy._validate_parameter_values here
+        Skinny version of taxcalc.Policy._validate_parameter_values
         """
         # pylint: disable=too-many-branches,too-many-nested-blocks
         data_names = set(self._vals.keys())
         for year in sorted(reform.keys()):
             for name in reform[year]:
-                if name.endswith('_cpi'):
-                    if isinstance(reform[year][name], bool):
-                        pname = name[:-4]  # root parameter name
-                        if pname not in data_names:
-                            msg = '{} {} unknown parameter name'
-                            self.reform_errors += (
-                                'ERROR: ' + msg.format(year, name) + '\n'
-                            )
+                if name not in data_names:
+                    msg = '{} {} unknown parameter name'
+                    self.reform_errors += (
+                        'ERROR: ' + msg.format(year, name) + '\n'
+                    )
+                else:
+                    # check parameter value type
+                    bool_type = self._vals[name]['boolean_value']
+                    int_type = self._vals[name]['integer_value']
+                    assert isinstance(reform[year][name], list)
+                    pvalue = reform[year][name][0]
+                    if isinstance(pvalue, list):
+                        scalar = False  # parameter value is a list
+                    else:
+                        scalar = True  # parameter value is a scalar
+                        pvalue = [pvalue]  # make scalar a single-item list
+                    for idx in range(0, len(pvalue)):
+                        if scalar:
+                            pname = name
                         else:
-                            # check if root parameter is cpi inflatable
-                            if not self._vals[pname]['cpi_inflatable']:
-                                msg = '{} {} parameter is not cpi inflatable'
+                            pname = '{}_{}'.format(name, idx)
+                        pvalue_boolean = (
+                            isinstance(pvalue[idx], bool) or
+                            (isinstance(pvalue[idx], int) and
+                                (pvalue[idx] == 0 or pvalue[idx] == 1)) or
+                            (isinstance(pvalue[idx], float) and
+                                (pvalue[idx] == 0.0 or pvalue[idx] == 1.0))
+                        )
+                        if bool_type:
+                            if not pvalue_boolean:
+                                msg = '{} {} value {} is not boolean'
                                 self.reform_errors += (
-                                    'ERROR: ' + msg.format(year, pname) + '\n'
+                                    'ERROR: ' +
+                                    msg.format(year, pname, pvalue[idx]) +
+                                    '\n'
                                 )
-                    else:
-                        msg = '{} {} parameter is not true or false'
-                        self.reform_errors += (
-                            'ERROR: ' + msg.format(year, name) + '\n'
-                        )
-                else:  # if name does not end with '_cpi'
-                    if name not in data_names:
-                        msg = '{} {} unknown parameter name'
-                        self.reform_errors += (
-                            'ERROR: ' + msg.format(year, name) + '\n'
-                        )
-                    else:
-                        # check parameter value type
-                        bool_type = self._vals[name]['boolean_value']
-                        int_type = self._vals[name]['integer_value']
-                        assert isinstance(reform[year][name], list)
-                        pvalue = reform[year][name][0]
-                        if isinstance(pvalue, list):
-                            scalar = False  # parameter value is a list
-                        else:
-                            scalar = True  # parameter value is a scalar
-                            pvalue = [pvalue]  # make scalar a single-item list
-                        for idx in range(0, len(pvalue)):
-                            if scalar:
-                                pname = name
-                            else:
-                                pname = '{}_{}'.format(name, idx)
-                            pvalue_boolean = (
-                                isinstance(pvalue[idx], bool) or
-                                (isinstance(pvalue[idx], int) and
-                                 (pvalue[idx] == 0 or pvalue[idx] == 1)) or
-                                (isinstance(pvalue[idx], float) and
-                                 (pvalue[idx] == 0.0 or pvalue[idx] == 1.0))
-                            )
-                            if bool_type:
-                                if not pvalue_boolean:
-                                    msg = '{} {} value {} is not boolean'
-                                    self.reform_errors += (
-                                        'ERROR: ' +
-                                        msg.format(year, pname, pvalue[idx]) +
-                                        '\n'
-                                    )
-                            elif int_type:
-                                if not isinstance(pvalue[idx], int):
-                                    msg = '{} {} value {} is not integer'
-                                    self.reform_errors += (
-                                        'ERROR: ' +
-                                        msg.format(year, pname, pvalue[idx]) +
-                                        '\n'
-                                    )
-                            else:  # param is neither bool_type nor int_type
-                                if not isinstance(pvalue[idx], (float, int)):
-                                    msg = '{} {} value {} is not a number'
-                                    self.reform_errors += (
-                                        'ERROR: ' +
-                                        msg.format(year, pname, pvalue[idx]) +
-                                        '\n'
-                                    )
+                        elif int_type:
+                            if not isinstance(pvalue[idx], int):
+                                msg = '{} {} value {} is not integer'
+                                self.reform_errors += (
+                                    'ERROR: ' +
+                                    msg.format(year, pname, pvalue[idx]) +
+                                    '\n'
+                                )
+                        else:  # param is neither bool_type nor int_type
+                            if not isinstance(pvalue[idx], (float, int)):
+                                msg = '{} {} value {} is not a number'
+                                self.reform_errors += (
+                                    'ERROR: ' +
+                                    msg.format(year, pname, pvalue[idx]) +
+                                    '\n'
+                                )
 
 
     def _validate_parameter_values(self, parameters_set):
@@ -218,12 +196,9 @@ class Specs(ParametersBase):
         parameters = sorted(parameters_set)
         syr = Policy.JSON_START_YEAR
         for pname in parameters:
-            if pname.endswith('_cpi'):
-                continue  # *_cpi parameter values validated elsewhere
             pvalue = getattr(self, pname)
             for vop, vval in self._vals[pname]['range'].items():
                 if isinstance(vval, six.string_types):
-                    print('up', pname, vop, vval)
                     if vval == 'default':
                         vvalue = getattr(clp, pname)
                         if vop == 'min':
@@ -237,7 +212,6 @@ class Specs(ParametersBase):
                         vvalue = self.simple_eval(vval)
                 else:
                     vvalue = np.full(pvalue.shape, vval)
-                print(pvalue, vvalue)
                 assert pvalue.shape == vvalue.shape
                 assert len(pvalue.shape) <= 2
                 if len(pvalue.shape) == 2:
@@ -313,7 +287,7 @@ def reform_warnings_errors(user_mods):
     return rtn_dict
 
 if __name__ == '__main__':
-    specs = Specs()
+    specs = Specs(2017)
     reform = {
         2017: {
             "tG1": [20],
