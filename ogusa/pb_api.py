@@ -20,9 +20,9 @@ class Specs(ParametersBase):
                  num_years=None,
                  initial_estimates=False):
         super(Specs, self).__init__()
-        self.start_year = start_year
+
         if num_years is None:
-            num_years = Specs.LAST_BUDGET_YEAR - self.start_year
+            num_years = Specs.LAST_BUDGET_YEAR - start_year
         # reads in default data
         self._vals = self._params_dict_from_json_file()
 
@@ -209,6 +209,7 @@ class Specs(ParametersBase):
                         # --> elif vop == 'max':
                         # -->    vvalue += rounding_error
                     else:
+                        print(pname, vop, vval)
                         vvalue = self.simple_eval(vval)
                 else:
                     vvalue = np.full(pvalue.shape, vval)
@@ -290,10 +291,8 @@ if __name__ == '__main__':
     specs = Specs(2017)
     reform = {
         2017: {
-            "tG1": [20],
-        },
-        2017: {
-            "T": [30]
+            "tG1": [50],
+            "T": [80]
         }
     }
     specs.implement_reform(reform)

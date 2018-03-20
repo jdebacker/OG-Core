@@ -67,27 +67,6 @@ class ParametersBase(object):
         self._end_year = start_year + num_years - 1
         self.set_default_vals()
 
-    def inflation_rates(self):
-        """
-        Override this method in subclass when appropriate.
-        """
-        return None
-
-    def wage_growth_rates(self):
-        """
-        Override this method in subclass when appropriate.
-        """
-        return None
-
-    def indexing_rates(self, param_name):
-        """
-        Return appropriate indexing rates for specified param_name.
-        """
-        if param_name == '_SS_Earnings_c':
-            return self.wage_growth_rates()
-        else:
-            return self.inflation_rates()
-
     def set_default_vals(self, known_years=999999):
         """
         Called by initialize method and from some subclass methods.
@@ -375,6 +354,7 @@ class ParametersBase(object):
     @staticmethod
     def _expand_array(x, x_dtype_int):
         """
+        Converts object into numpy array if object is of type list
         """
         if not isinstance(x, list) and not isinstance(x, np.ndarray):
             msg = '_expand_array expects x to be a list or numpy array'
@@ -394,17 +374,29 @@ class ParametersBase(object):
         '/': lambda pvalue, val: pvalue / val if val > 0 else 'ERROR: Cannot divide by zero',
     }
 
-    def simple_eval(self, vval):
-        pieces = vval.split(' ')
-        against = pieces[0]
-        # vval is of the form 'vval op value'
+    def simple_eval(self, param_string):
+        """
+        Parses `param_string` and returns result. `param_string can be either:
+            1. `param_name op scalar` -- this will be parsed into param, op, and scalar
+                    where `op` is a key in `OP_DICT`. The corresponding function is
+                    applied to the parameter value and the scalar value.
+
+            2. `param_name` -- simply return the parameter value that is retrieved 
+                    from the object
+        
+        returns: float used for validation
+        """
+        pieces = param_string.split(' ')
+        validate_against = pieces[0]
+        # param_string is of the form 'param_name op scalar'
         if len(pieces) > 1:
             op = pieces[1]
+            # parse string to python type (i.e. str --> int, float, bool)
             scalar = ast.literal_eval(pieces[2])
-            vvalue = getattr(self, against)
-            assert vvalue is not None and isinstance(vvalue, (int, float, np.ndarray))
+            value_against = getattr(self, validate_against)
+            assert value_against is not None and isinstance(value_against, (int, float, np.ndarray))
             assert op in ParametersBase.OP_DICT
-            return ParametersBase.OP_DICT[op](vvalue, scalar)
+            return ParametersBase.OP_DICT[op](value_against, scalar)
         else:
             # vval is just the parameter name
-            return getattr(self, vval)
+            return getattr(self, param_string)
