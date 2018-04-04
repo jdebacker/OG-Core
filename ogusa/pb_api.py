@@ -58,7 +58,7 @@ class Specifications(ParametersBase):
         )
         # call some more functions
 
-    def esitimate_parameters(self, data=None, reform={}):
+    def estimate_parameters(self, data=None, reform={}):
         """
         Runs long running parameter estimatation routines such as estimating
         tax function parameters
