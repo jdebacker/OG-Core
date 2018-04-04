@@ -14,9 +14,10 @@ from ogusa.parametersbase import ParametersBase
 class Specifications(ParametersBase):
     DEFAULTS_FILENAME = 'default_parameters.json'
     LAST_BUDGET_YEAR = 2027  # increases by one every calendar year
+    JSON_START_YEAR = 2013
 
     def __init__(self,
-                 start_year,
+                 start_year=JSON_START_YEAR,
                  num_years=None,
                  initial_estimates=False):
         super(Specifications, self).__init__()
