@@ -381,9 +381,9 @@ class ParametersBase(object):
                     where `op` is a key in `OP_DICT`. The corresponding function is
                     applied to the parameter value and the scalar value.
 
-            2. `param_name` -- simply return the parameter value that is retrieved 
+            2. `param_name` -- simply return the parameter value that is retrieved
                     from the object
-        
+
         returns: float used for validation
         """
         pieces = param_string.split(' ')
