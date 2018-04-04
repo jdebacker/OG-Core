@@ -32,8 +32,8 @@ class Specifications(ParametersBase):
         # does cheap calculations such as growth
         self.initialize(start_year, num_years, initial_estimates=False)
 
-        self.reform_warnings = ''
-        self.reform_errors = ''
+        self.warnings = ''
+        self.errors = ''
         self._ignore_errors = False
 
     def initialize(self, start_year, num_years, initial_estimates=False):
@@ -104,8 +104,8 @@ class Specifications(ParametersBase):
             raise ValueError(msg.format(last_reform_year, self.end_year))
         # validate reform parameter names and types
         self._validate_parameter_names_types(reform)
-        if not self._ignore_errors and self.reform_errors:
-            raise ValueError(self.reform_errors)
+        if not self._ignore_errors and self.errors:
+            raise ValueError(self.errors)
         # implement the reform year by year
         precall_current_year = self.current_year
         reform_parameters = set()
@@ -130,7 +130,7 @@ class Specifications(ParametersBase):
             for name in reform[year]:
                 if name not in data_names:
                     msg = '{} {} unknown parameter name'
-                    self.reform_errors += (
+                    self.errors += (
                         'ERROR: ' + msg.format(year, name) + '\n'
                     )
                 else:
@@ -159,7 +159,7 @@ class Specifications(ParametersBase):
                         if bool_type:
                             if not pvalue_boolean:
                                 msg = '{} {} value {} is not boolean'
-                                self.reform_errors += (
+                                self.errors += (
                                     'ERROR: ' +
                                     msg.format(year, pname, pvalue[idx]) +
                                     '\n'
@@ -167,7 +167,7 @@ class Specifications(ParametersBase):
                         elif int_type:
                             if not isinstance(pvalue[idx], int):
                                 msg = '{} {} value {} is not integer'
-                                self.reform_errors += (
+                                self.errors += (
                                     'ERROR: ' +
                                     msg.format(year, pname, pvalue[idx]) +
                                     '\n'
@@ -175,7 +175,7 @@ class Specifications(ParametersBase):
                         else:  # param is neither bool_type nor int_type
                             if not isinstance(pvalue[idx], (float, int)):
                                 msg = '{} {} value {} is not a number'
-                                self.reform_errors += (
+                                self.errors += (
                                     'ERROR: ' +
                                     msg.format(year, pname, pvalue[idx]) +
                                     '\n'
@@ -242,13 +242,13 @@ class Specifications(ParametersBase):
                             if extra:
                                 msg += '_{}'.format(idx[1])
                         if action == 'warn':
-                            self.reform_warnings += (
+                            self.warnings += (
                                 'WARNING: ' + msg.format(idx[0] + syr, name,
                                                          pvalue[idx],
                                                          vvalue[idx]) + '\n'
                             )
                         if action == 'stop':
-                            self.reform_errors += (
+                            self.errors += (
                                 'ERROR: ' + msg.format(idx[0] + syr, name,
                                                        pvalue[idx],
                                                        vvalue[idx]) + '\n'
