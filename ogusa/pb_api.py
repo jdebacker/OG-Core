@@ -77,7 +77,7 @@ class Specifications(ParametersBase):
         defaults.set_year(self.current_year)
         return defaults
 
-    def implement_reform(self, reform):
+    def update_specifications(self, reform):
         # check that all reform dictionary keys are integers
         # check that all reform dictionary keys are integers
         if not isinstance(reform, dict):
@@ -280,7 +280,7 @@ def reform_warnings_errors(user_mods):
     # create Policy object and implement reform
     pol = Policy()
     try:
-        pol.implement_reform(user_mods['policy'])
+        pol.update_specifications(user_mods['policy'])
         rtn_dict['warnings'] = pol.reform_warnings
         rtn_dict['errors'] = pol.reform_errors
     except ValueError as valerr_msg:
@@ -295,6 +295,6 @@ if __name__ == '__main__':
             "T": [80]
         }
     }
-    specs.implement_reform(reform)
+    specs.update_specifications(reform)
     print('errors', specs.reform_errors)
     print('warnings', specs.reform_warnings)
