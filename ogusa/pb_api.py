@@ -275,16 +275,16 @@ def reform_warnings_errors(user_mods):
     reform specified in user_mods, and therefore, no range-related
     warnings or errors will be returned in this case.
     """
-    rtn_dict = {'warnings': '', 'errors': ''}
+    rtn_dict = {'ogusa': {'warnings': '', 'errors': ''}}
 
-    # create Policy object and implement reform
-    pol = Policy()
+    # create Specifications object and implement reform
+    specs = Specifications()
     try:
-        pol.update_specifications(user_mods['policy'])
-        rtn_dict['warnings'] = pol.reform_warnings
-        rtn_dict['errors'] = pol.reform_errors
+        specs.update_specifications(user_mods['ogusa'])
+        rtn_dict['ogusa']['warnings'] = specs.warnings
+        rtn_dict['ogusa']['errors'] = specs.errors
     except ValueError as valerr_msg:
-        rtn_dict['errors'] = valerr_msg.__str__()
+        rtn_dict['ogusa']['errors'] = valerr_msg.__str__()
     return rtn_dict
 
 if __name__ == '__main__':
