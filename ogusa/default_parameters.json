@@ -7,7 +7,7 @@
         "col_label": "",
         "boolean_value": false,
         "integer_value": false,
-        "value": [0.4],
+        "value": [0.04],
         "range": {"min": 0.02, "max": 0.06},
         "out_of_range_minmsg": "",
         "out_of_range_maxmsg": "",
