@@ -11,7 +11,7 @@ import ogusa
 from ogusa.parametersbase import ParametersBase
 
 
-class Specs(ParametersBase):
+class Specifications(ParametersBase):
     DEFAULTS_FILENAME = 'default_parameters.json'
     LAST_BUDGET_YEAR = 2027  # increases by one every calendar year
 
@@ -19,10 +19,10 @@ class Specs(ParametersBase):
                  start_year,
                  num_years=None,
                  initial_estimates=False):
-        super(Specs, self).__init__()
+        super(Specifications, self).__init__()
 
         if num_years is None:
-            num_years = Specs.LAST_BUDGET_YEAR - start_year
+            num_years = Specifications.LAST_BUDGET_YEAR - start_year
         # reads in default data
         self._vals = self._params_dict_from_json_file()
 
@@ -42,7 +42,7 @@ class Specs(ParametersBase):
         Next call self.ogusa_set_default_vals for further initialization
         If estimate_params is true, then run long running estimation routines
         """
-        super(Specs, self).initialize(start_year, num_years)
+        super(Specifications, self).initialize(start_year, num_years)
         self.ogusa_set_default_vals()
         if initial_estimates:
             self.estimate_parameters()
@@ -73,7 +73,7 @@ class Specs(ParametersBase):
         Return Policy object same as self except with current-law policy.
         """
         startyear = self.start_year
-        defaults = Specs(start_year=startyear, num_years=self.num_years)
+        defaults = Specifications(start_year=startyear, num_years=self.num_years)
         defaults.set_year(self.current_year)
         return defaults
 
@@ -194,7 +194,7 @@ class Specs(ParametersBase):
         # above handles non-rounding of inflation-indexed parameter values
         clp = self.default_specs()
         parameters = sorted(parameters_set)
-        syr = Policy.JSON_START_YEAR
+        syr = Specifications.JSON_START_YEAR
         for pname in parameters:
             pvalue = getattr(self, pname)
             for vop, vval in self._vals[pname]['range'].items():
@@ -288,7 +288,7 @@ def reform_warnings_errors(user_mods):
     return rtn_dict
 
 if __name__ == '__main__':
-    specs = Specs(2017)
+    specs = Specifications(2017)
     reform = {
         2017: {
             "tG1": [50],
