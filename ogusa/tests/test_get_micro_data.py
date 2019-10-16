@@ -59,8 +59,8 @@ def test_puf_path():
     if os.path.exists(PUF_PATH):
         calc = get_micro_data.get_calculator(
             baseline, start_year, reform=reform, data=PUF_PATH)
-        # blind_head is only in the CPS file and e00700 is only in the PUF.
-        # See taxcalc/records_variables.json
+        # blind_head is only in the CPS file and e00700 is only in the
+        # PUF.  See taxcalc/records_variables.json
         assert (calc.array('blind_head').sum() == 0 and
                 calc.array('e00700').sum() > 0)
     # we do not have puf.csv
@@ -101,7 +101,8 @@ def test_get_data():
         client=None, num_workers=1)
     assert test_data.keys() == {"2028"}
     for k, v in test_data.items():
-        assert_frame_equal(expected_data[k], v)
+        assert_frame_equal(
+            expected_data[k], v.drop(columns='payroll_tax_liab'))
 
 
 @pytest.mark.full_run
