@@ -99,6 +99,7 @@ def test_get_data():
     test_data, _ = get_micro_data.get_data(
         baseline=True, start_year=2028, reform={}, data='cps',
         client=None, num_workers=1)
+    assert test_data.keys() == {"2028"}
     for k, v in test_data.items():
         assert_frame_equal(expected_data[k], v)
 
@@ -115,12 +116,13 @@ def test_taxcalc_advance():
     # calc1 = utils.safe_read_pickle(os.path.join(
     #         CUR_PATH, 'test_io_data', 'calc_object_for_tests.pkl'))
     calc1 = get_micro_data.get_calculator(
-        baseline=True, calculator_start_year=2028, reform={},
+        baseline=True, calculator_start_year=2027, reform={},
         data='cps')
     expected_dict = utils.safe_read_pickle(os.path.join(
         CUR_PATH, 'test_io_data', 'tax_dict_for_tests.pkl'))
-    test_dict = get_micro_data.taxcalc_advance(calc1, 2028)
-    for k, v in test_dict.items():
+    test_dict = get_micro_data.taxcalc_advance(calc1, 2027, 2028)
+    assert test_dict.keys() == {"2027", "2028"}
+    for k, v in test_dict["2028"].items():
         assert np.allclose(expected_dict[k], v, equal_nan=True)
 
 

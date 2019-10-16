@@ -5,7 +5,7 @@ model (Tax-Calculator).
 ------------------------------------------------------------------------
 '''
 from taxcalc import Records, Calculator, Policy
-from pandas import DataFrame
+import pandas as pd
 from dask import compute, delayed
 import dask.multiprocessing
 from distributed import Client
@@ -109,21 +109,8 @@ def get_data(baseline=False, start_year=DEFAULT_START_YEAR, reform={},
     calc1 = get_calculator(baseline=baseline,
                            calculator_start_year=start_year,
                            reform=reform, data=data)
-    # Compute MTRs and taxes or each year, but not beyond TC_LAST_YEAR
-    lazy_values = []
-    for year in range(start_year, TC_LAST_YEAR + 1):
-        lazy_values.append(
-            delayed(taxcalc_advance)(calc1, year))
-    with Client(direct_to_workers=True) as c:
-        futures = c.compute(lazy_values, scheduler=dask.multiprocessing.get,
-                            num_workers=num_workers)
-        results = c.gather(futures)
-
     # dictionary of data frames to return
-    micro_data_dict = {}
-    for i, result in enumerate(results):
-        year = start_year + i
-        micro_data_dict[str(year)] = DataFrame(result)
+    micro_data_dict = taxcalc_advance(calc1, start_year, TC_LAST_YEAR)
 
     if reform:
         pkl_path = "micro_data_policy.pkl"
@@ -134,7 +121,7 @@ def get_data(baseline=False, start_year=DEFAULT_START_YEAR, reform={},
         pickle.dump(micro_data_dict, f)
 
     # Do some garbage collection
-    del calc1, results
+    del calc1
 
     # Pull Tax-Calc version for reference
     taxcalc_version = pkg_resources.get_distribution("taxcalc").version
@@ -142,48 +129,51 @@ def get_data(baseline=False, start_year=DEFAULT_START_YEAR, reform={},
     return micro_data_dict, taxcalc_version
 
 
-def taxcalc_advance(calc1, year):
+def taxcalc_advance(calc1, start_year, max_year):
     '''
     This function advances the year used in Tax-Calculator, compute
     taxes and rates, and save the results to a dictionary.
 
     Args:
         calc1 (Tax-Calculator Calculator object): TC calculator
-        year (int): year to begin advancing from
+        start_year (int): year to begin advancing from
+        max_year (int): last year to be advanced to
 
     Returns:
         tax_dict (dict): a dictionary of microdata with marginal tax
             rates and other information computed in TC
     '''
-    calc1.advance_to_year(year)
-    calc1.calc_all()
-    print('Year: ', str(calc1.current_year))
+    tax_dict = {}
+    for year in range(start_year, max_year + 1):
+        calc1.advance_to_year(year)
+        calc1.calc_all()
+        print('Year:', year)
 
-    # Compute mtr on capital income
-    mtr_combined_capinc = cap_inc_mtr(calc1)
+        # Compute mtr on capital income
+        mtr_combined_capinc = cap_inc_mtr(calc1)
 
-    # Compute weighted avg mtr for labor income
-    # Note the index [2] in the mtr results means that we are pulling
-    # the combined mtr from the IIT + FICA taxes
-    mtr_combined_labinc = ((
-        calc1.mtr('e00200p')[2] * np.abs(calc1.array('e00200')) +
-        calc1.mtr('e00900p')[2] * np.abs(calc1.array('sey'))) /
-        (np.abs(calc1.array('sey')) + np.abs(calc1.array('e00200'))))
+        # Compute weighted avg mtr for labor income
+        # Note the index [2] in the mtr results means that we are pulling
+        # the combined mtr from the IIT + FICA taxes
+        mtr_combined_labinc = ((
+            calc1.mtr('e00200p')[2] * np.abs(calc1.array('e00200')) +
+            calc1.mtr('e00900p')[2] * np.abs(calc1.array('sey'))) /
+            (np.abs(calc1.array('sey')) + np.abs(calc1.array('e00200'))))
 
-    # Put MTRs, income, tax liability, and other variables in dict
-    length = len(calc1.array('s006'))
-    tax_dict = {
-        'mtr_labinc': mtr_combined_labinc,
-        'mtr_capinc': mtr_combined_capinc,
-        'age': calc1.array('age_head'),
-        'total_labinc': calc1.array('sey') + calc1.array('e00200'),
-        'total_capinc': (calc1.array('expanded_income') -
-                         calc1.array('sey') + calc1.array('e00200')),
-        'expanded_income': calc1.array('expanded_income'),
-        'total_tax_liab': calc1.array('combined'),
-        'etr': calc1.array('combined') / calc1.array('expanded_income'),
-        'year': calc1.current_year * np.ones(length),
-        'weight': calc1.array('s006')}
+        # Put MTRs, income, tax liability, and other variables in dict
+        length = len(calc1.array('s006'))
+        tax_dict[str(year)] = pd.DataFrame.from_dict({
+            'mtr_labinc': mtr_combined_labinc,
+            'mtr_capinc': mtr_combined_capinc,
+            'age': calc1.array('age_head'),
+            'total_labinc': calc1.array('sey') + calc1.array('e00200'),
+            'total_capinc': (calc1.array('expanded_income') -
+                            calc1.array('sey') + calc1.array('e00200')),
+            'expanded_income': calc1.array('expanded_income'),
+            'total_tax_liab': calc1.array('combined'),
+            'etr': calc1.array('combined') / calc1.array('expanded_income'),
+            'year': calc1.current_year * np.ones(length),
+            'weight': calc1.array('s006')})
 
     return tax_dict
 
