@@ -583,9 +583,9 @@ def run_SS(p, client=None):
                            factor_ss, Yss, p, client, fsolve_flag)
     else:
         # Use the baseline solution to get starting values for the reform
-        baseline_ss_dir = os.path.join(
+        baseline_ss_path = os.path.join(
             p.baseline_dir, 'SS', 'SS_vars.pkl')
-        ss_solutions = utils.safe_read_pickle(baseline_ss_dir)
+        ss_solutions = utils.safe_read_pickle(baseline_ss_path)
         # use baseline solution as starting values if dimensions match
         if ss_solutions['bssmat_splus1'].shape == (p.S, p.J):
             (b_guess, n_guess, rguess, BQguess, TRguess, Yguess,
