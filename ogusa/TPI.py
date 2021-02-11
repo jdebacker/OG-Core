@@ -406,84 +406,112 @@ def run_TPI(p, client=None):
           '; and tG2:', p.tG2)
 
     # Initialize guesses at time paths
-    # Make array of initial guesses for labor supply and savings
-    guesses_b = utils.get_initial_path(
-        initial_b, ss_vars['bssmat_splus1'], p, 'ratio')
-    guesses_n = utils.get_initial_path(
-        initial_n, ss_vars['nssmat'], p, 'ratio')
-    b_mat = guesses_b
-    n_mat = guesses_n
-    ind = np.arange(p.S)
+    if p.baseline:
 
-    # Get path for aggregate savings and labor supply`
-    L_init = np.ones((p.T + p.S,)) * ss_vars['Lss']
-    B_init = np.ones((p.T + p.S,)) * ss_vars['Bss']
-    L_init[:p.T] = aggr.get_L(n_mat[:p.T], p, 'TPI')
-    B_init[1:p.T] = aggr.get_B(b_mat[:p.T], p, 'TPI', False)[:p.T - 1]
-    B_init[0] = B0
-    K_init = B_init * ss_vars['Kss'] / ss_vars['Bss']
-    K = K_init
-    K_d = K_init * ss_vars['K_d_ss'] / ss_vars['Kss']
-    K_f = K_init * ss_vars['K_f_ss'] / ss_vars['Kss']
-    L = L_init
-    B = B_init
-    Y = np.zeros_like(K)
-    Y[:p.T] = firm.get_Y(K[:p.T], L[:p.T], p, 'TPI')
-    Y[p.T:] = ss_vars['Yss']
-    r = np.zeros_like(Y)
-    r[:p.T] = firm.get_r(Y[:p.T], K[:p.T], p, 'TPI')
-    r[p.T:] = ss_vars['rss']
-    # For case where economy is small open econ
-    r[p.zeta_K == 1] = p.world_int_rate[p.zeta_K == 1]
-    # Compute other interest rates
-    r_gov = fiscal.get_r_gov(r, p)
-    r_hh = aggr.get_r_hh(r, r_gov, K, ss_vars['Dss'])
+        # Make array of initial guesses for labor supply and savings
+        guesses_b = utils.get_initial_path(
+            initial_b, ss_vars['bssmat_splus1'], p, 'ratio')
+        guesses_n = utils.get_initial_path(
+            initial_n, ss_vars['nssmat'], p, 'ratio')
+        b_mat = guesses_b
+        n_mat = guesses_n
+        ind = np.arange(p.S)
 
-    # compute w
-    w = np.zeros_like(r)
-    w[:p.T] = firm.get_w_from_r(r[:p.T], p, 'TPI')
-    w[p.T:] = ss_vars['wss']
+        # Get path for aggregate savings and labor supply`
+        L_init = np.ones((p.T + p.S,)) * ss_vars['Lss']
+        B_init = np.ones((p.T + p.S,)) * ss_vars['Bss']
+        L_init[:p.T] = aggr.get_L(n_mat[:p.T], p, 'TPI')
+        B_init[1:p.T] = aggr.get_B(b_mat[:p.T], p, 'TPI', False)[:p.T - 1]
+        B_init[0] = B0
+        K_init = B_init * ss_vars['Kss'] / ss_vars['Bss']
+        K = K_init
+        K_d = K_init * ss_vars['K_d_ss'] / ss_vars['Kss']
+        K_f = K_init * ss_vars['K_f_ss'] / ss_vars['Kss']
+        L = L_init
+        B = B_init
+        Y = np.zeros_like(K)
+        Y[:p.T] = firm.get_Y(K[:p.T], L[:p.T], p, 'TPI')
+        Y[p.T:] = ss_vars['Yss']
+        r = np.zeros_like(Y)
+        r[:p.T] = firm.get_r(Y[:p.T], K[:p.T], p, 'TPI')
+        r[p.T:] = ss_vars['rss']
+        # For case where economy is small open econ
+        r[p.zeta_K == 1] = p.world_int_rate[p.zeta_K == 1]
+        # Compute other interest rates
+        r_gov = fiscal.get_r_gov(r, p)
+        r_hh = aggr.get_r_hh(r, r_gov, K, ss_vars['Dss'])
 
-    # initial guesses at fiscal vars
-    if p.budget_balance:
-        if np.abs(ss_vars['TR_ss']) < 1e-13:
-            TR_ss2 = 0.0  # sometimes SS is very small but not zero,
-            # even if taxes are zero, this get's rid of the
-            # approximation error, which affects the pct changes below
+        # compute w
+        w = np.zeros_like(r)
+        w[:p.T] = firm.get_w_from_r(r[:p.T], p, 'TPI')
+        w[p.T:] = ss_vars['wss']
+
+        # initial guesses at fiscal vars
+        if p.budget_balance:
+            if np.abs(ss_vars['TR_ss']) < 1e-13:
+                TR_ss2 = 0.0  # sometimes SS is very small but not zero,
+                # even if taxes are zero, this get's rid of the
+                # approximation error, which affects the pct changes below
+            else:
+                TR_ss2 = ss_vars['TR_ss']
+            TR = np.ones(p.T + p.S) * TR_ss2
+            total_tax_revenue = TR - ss_vars['agg_pension_outlays']
+            G = np.zeros(p.T + p.S)
+            D = np.zeros(p.T + p.S)
+            D_d = np.zeros(p.T + p.S)
+            D_f = np.zeros(p.T + p.S)
         else:
-            TR_ss2 = ss_vars['TR_ss']
-        TR = np.ones(p.T + p.S) * TR_ss2
-        total_tax_revenue = TR - ss_vars['agg_pension_outlays']
-        G = np.zeros(p.T + p.S)
-        D = np.zeros(p.T + p.S)
-        D_d = np.zeros(p.T + p.S)
-        D_f = np.zeros(p.T + p.S)
-    else:
-        if p.baseline_spending:
-            TR = TRbaseline
-            G = Gbaseline
-            G[p.T:] = ss_vars['Gss']
-        else:
-            TR = p.alpha_T * Y
-            G = np.ones(p.T + p.S) * ss_vars['Gss']
-        D = np.ones(p.T + p.S) * ss_vars['Dss']
-        D_d = D * ss_vars['D_d_ss'] / ss_vars['Dss']
-        D_f = D * ss_vars['D_f_ss'] / ss_vars['Dss']
-    total_tax_revenue = np.ones(p.T + p.S) * ss_vars['total_tax_revenue']
+            if p.baseline_spending:
+                TR = TRbaseline
+                G = Gbaseline
+                G[p.T:] = ss_vars['Gss']
+            else:
+                TR = p.alpha_T * Y
+                G = np.ones(p.T + p.S) * ss_vars['Gss']
+            D = np.ones(p.T + p.S) * ss_vars['Dss']
+            D_d = D * ss_vars['D_d_ss'] / ss_vars['Dss']
+            D_f = D * ss_vars['D_f_ss'] / ss_vars['Dss']
+        total_tax_revenue = np.ones(p.T + p.S) * ss_vars['total_tax_revenue']
 
-    # Initialize bequests
-    BQ0 = aggr.get_BQ(r_hh[0], initial_b, None, p, 'SS', True)
-    if not p.use_zeta:
-        BQ = np.zeros((p.T + p.S, p.J))
-        for j in range(p.J):
-            BQ[:, j] = (list(np.linspace(BQ0[j],
-                                         ss_vars['BQss'][j], p.T)) +
-                        [ss_vars['BQss'][j]] * p.S)
-        BQ = np.array(BQ)
+        # Initialize bequests
+        BQ0 = aggr.get_BQ(r_hh[0], initial_b, None, p, 'SS', True)
+        if not p.use_zeta:
+            BQ = np.zeros((p.T + p.S, p.J))
+            for j in range(p.J):
+                BQ[:, j] = (
+                    list(np.linspace(BQ0[j], ss_vars['BQss'][j], p.T)) +
+                    [ss_vars['BQss'][j]] * p.S)
+            BQ = np.array(BQ)
+        else:
+            BQ = (list(np.linspace(BQ0, ss_vars['BQss'], p.T)) +
+                [ss_vars['BQss']] * p.S)
+            BQ = np.array(BQ)
     else:
-        BQ = (list(np.linspace(BQ0, ss_vars['BQss'], p.T)) +
-              [ss_vars['BQss']] * p.S)
-        BQ = np.array(BQ)
+        # Use the baseline solution to get starting values for the reform
+        baseline_tpi_path = os.path.join(
+            p.baseline_dir, 'TPI', 'TPI_vars.pkl')
+        tpi_solutions = utils.safe_read_pickle(baseline_tpi_path)
+        # use baseline solution as starting values if dimensions match
+        if tpi_solutions['bmat_splus1'].shape == (p.T, p.S, p.J):
+            (L, B, K, K_d, K_f, Y, r, r_gov, r_hh, w, TR, G, D, D_d,
+             D_f, total_tax_revenue, BQ, guesses_b, guesses_n) =\
+                (tpi_solutions['L'], tpi_solutions['B'],
+                 tpi_solutions['K'], tpi_solutions['K_d'],
+                 tpi_solutions['K_f'], tpi_solutions['Y'],
+                 tpi_solutions['r'], tpi_solutions['r_gov'],
+                 tpi_solutions['r_hh'], tpi_solutions['w'],
+                 tpi_solutions['TR'], tpi_solutions['G'],
+                 tpi_solutions['D'], tpi_solutions['D_d'],
+                 tpi_solutions['D_f'], tpi_solutions['total_tax_revenue'],
+                 tpi_solutions['BQ'], tpi_solutions['bmat_splus1'],
+                 tpi_solutions['n_mat'])
+            # extend n and bsplus1 arrays so T+S years long
+            b_tail = np.tile(ss_vars['bssmat_splus1'].reshape(1, p.S, p.J),
+                             (p.S, 1, 1))
+            n_tail = np.tile(ss_vars['nssmat'].reshape(1, p.S, p.J),
+                             (p.S, 1, 1))
+            guesses_b = np.append(guesses_b, b_tail, axis=0)
+            guesses_n = np.append(guesses_n, n_tail, axis=0)
 
     TPIiter = 0
     TPIdist = 10
