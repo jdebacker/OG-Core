@@ -189,7 +189,6 @@ def inner_loop(outer_loop_vars, p, client):
     D, D_d, D_f, new_borrowing, _, new_borrowing_f =\
         fiscal.get_D_ss(r_p, Y, p)  # r_p isn't right here, but it only affects debt service amount, which we don't care about at this point in the algorithm
     K, K_d, K_f = aggr.get_K_splits(B, K_demand_open, D_d, p.zeta_K[-1])
-
     # Find temporary values for K_g
     I_g = fiscal.get_I_g(Y, p.alpha_I[-1])
     K_g = fiscal.get_K_g(0, I_g, p, 'SS')
@@ -198,6 +197,7 @@ def inner_loop(outer_loop_vars, p, client):
     # Now update for a final Y and K_g
     I_g = fiscal.get_I_g(Y, p.alpha_I[-1])
     K_g = fiscal.get_K_g(0, I_g, p, 'SS')
+    print('K_g = ', K_g)
     Y = firm.get_Y(K, K_g, L, p, 'SS')
     if p.zeta_K[-1] == 1.0:
         new_r = p.world_int_rate[-1]
@@ -211,8 +211,11 @@ def inner_loop(outer_loop_vars, p, client):
     # now get accurate measure of debt service cost
     D, D_d, D_f, new_borrowing, debt_service, new_borrowing_f =\
         fiscal.get_D_ss(new_r_gov, Y, p)
+    K, K_d, K_f = aggr.get_K_splits(B, K_demand_open, D_d, p.zeta_K[-1])
+    Y = firm.get_Y(K, K_g, L, p, 'SS')
     MPKg = firm.get_MPx(Y, K_g, p.gamma_g, p, 'SS')
     new_r_p = aggr.get_r_p(new_r, new_r_gov, K, K_g, D, MPKg, p, 'SS')
+    print('new_r_p: ', new_r_p)
     average_income_model = ((new_r_p * b_s + new_w * p.e * nssmat) *
                             p.omega_SS.reshape(p.S, 1) *
                             p.lambdas.reshape(1, p.J)).sum()
@@ -241,9 +244,17 @@ def inner_loop(outer_loop_vars, p, client):
     new_TR = fiscal.get_TR(Y, TR, G, total_tax_revenue, agg_pension_outlays,
                            UBI_outlays, I_g, p, 'SS')
 
+    debt_service_f = fiscal.get_debt_service_f(new_r_p, D_f)
+    C = aggr.get_C(cssmat, p, 'SS')
+    I_d = aggr.get_I(bssmat, K_d, K_d, p, 'SS')
+    RC = aggr.resource_constraint(
+        Y, C, G, I_d, I_g, K_f, new_borrowing_f, debt_service_f,
+        new_r_p, p)
+    print("RC constraint in inner loop = ", RC)
+
     # print('BQ at the end of inner loop: ', new_BQ)
     return euler_errors, bssmat, nssmat, new_r, new_r_gov, new_r_p, \
-        new_w, new_TR, Y, new_factor, new_BQ, average_income_model
+        new_w, new_TR, Y, new_factor, new_BQ, average_income_model, K, K_d, K_f, L, B
 
 
 def SS_solver(bmat, nmat, r_p, w, Y, BQ, TR, factor, p, client,
@@ -278,20 +289,12 @@ def SS_solver(bmat, nmat, r_p, w, Y, BQ, TR, factor, p, client,
     if p.baseline_spending:
         TR_ss = TR
     while (dist > p.mindist_SS) and (iteration < maxiter_ss):
-        # Solve for the steady state levels of b and n, given w, r,
-        # Y, BQ, TR, and factor
-        # if p.baseline_spending:
-        #     TR = TR_ss
-        # if not p.budget_balance and not p.baseline_spending:
-        #     Y = TR / p.alpha_T[-1]
 
         outer_loop_vars = (bmat, nmat, r_p, w, Y, BQ, TR, factor)
 
-        # print('IN SS SOLVE outer loop -- r, w, Y = ', r, w, Y)
-
         (euler_errors, new_bmat, new_nmat, new_r, new_r_gov, new_r_p,
          new_w, new_TR, new_Y, new_factor, new_BQ,
-         average_income_model) =\
+         average_income_model, new_K, new_K_d, new_K_f, new_L, new_B) =\
             inner_loop(outer_loop_vars, p, client)
 
         # update guesses for next iteration
@@ -346,24 +349,36 @@ def SS_solver(bmat, nmat, r_p, w, Y, BQ, TR, factor, p, client,
     rss = new_r
     wss = new_w
     r_gov_ss = fiscal.get_r_gov(rss, p)
+    print("diff in r gov = ", r_gov_ss - new_r_gov)
     TR_ss = new_TR
     Yss = new_Y
     I_g_ss = fiscal.get_I_g(Yss, p.alpha_I[-1])
     K_g_ss = fiscal.get_K_g(0, I_g_ss, p, 'SS')
+    print('K_g_ss = ', K_g_ss)
     Lss = aggr.get_L(nssmat, p, 'SS')
     Bss = aggr.get_B(bssmat_splus1, p, 'SS', False)
     (Dss, D_d_ss, D_f_ss, new_borrowing, debt_service,
      new_borrowing_f) = fiscal.get_D_ss(r_gov_ss, Yss, p)
     w_open = firm.get_w_from_r(p.world_int_rate[-1], p, 'SS')
     K_demand_open_ss = firm.get_K(p.world_int_rate[-1], w_open, Lss, p, 'SS')
-    Kss, K_d_ss, K_f_ss = aggr.get_K_splits(
-        Bss, K_demand_open_ss, D_d_ss, p.zeta_K[-1])
-    Yss = firm.get_Y(Kss, K_g_ss, Lss, p, 'SS')
+    # Kss, K_d_ss, K_f_ss = aggr.get_K_splits(
+    #     Bss, K_demand_open_ss, D_d_ss, p.zeta_K[-1])
+    # Yss = firm.get_Y(Kss, K_g_ss, Lss, p, 'SS')
+    Kss = new_K
+    K_d_ss = new_K_d
+    K_f_ss = new_K_f
+    print("B diff = ", Bss - new_B)
+    print("Y diff = ", Yss - new_Y)
+    print("L diff = ", Lss - new_L)
+    print("K diff = ", Kss - new_K)
     I_g_ss = fiscal.get_I_g(Yss, p.alpha_I[-1])
     K_g_ss = fiscal.get_K_g(0, I_g_ss, p, 'SS')
     MPKg = firm.get_MPx(Yss, K_g_ss, p.gamma_g, p, 'SS')
+    # r_p_ss = new_r_p
     r_p_ss = aggr.get_r_p(rss, r_gov_ss, Kss, K_g_ss, Dss, MPKg, p, 'SS')
     print('Diff in RP = ', r_p_ss - r_p)
+    print('Diff in RP2 = ', r_p_ss - new_r_p)
+    print('Diff in RP3 = ', r_p - new_r_p)
     # Note that implicitly in this computation is that immigrants'
     # wealth is all in the form of private capital
     I_d_ss = aggr.get_I(bssmat_splus1, K_d_ss, K_d_ss, p, 'SS')
