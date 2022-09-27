@@ -2,12 +2,12 @@ name: ogcore-dev
 channels:
 - conda-forge
 dependencies:
-- python>=3.7.7
+- python>=3.8
 - ipython
 - setuptools
 - mkl>=2021.4.0
 - psutil
-- scipy>=1.7.1
+- scipy>=1.8.1
 - pandas>=1.2.5
 - matplotlib
 - dask>=2.30.0
