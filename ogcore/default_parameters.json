@@ -486,6 +486,25 @@
             }
         }
     },
+    "psi": {
+        "title": "Scale parameter in quadratic capital adjustment cost function",
+        "description": "Scale parameter in quadratic capital adjustment cost function",
+        "section_1": "Firm Parameters",
+        "section_2": "Investment costs",
+        "notes": "If psi = 0 then the dynamic firm problem collapses to the static firm problem.",
+        "type": "float",
+        "value": [
+            {
+                "value": 0.0
+            }
+        ],
+        "validators": {
+            "range": {
+                "min": 0.0,
+                "max": 10.0
+            }
+        }
+    },
     "Z": {
         "title": "Total factor productivity in firm production function",
         "description": "Total factor productivity in firm production function.  Set value for base year, click '+' to add value for next year.  All future years not specified are set to last value entered.",
