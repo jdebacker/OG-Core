@@ -815,8 +815,9 @@ def test_resource_constraint():
     I_d = np.array([20, 5, 0.6, 10, 1])
     I_g = np.zeros_like(I_d)
     net_capital_flows = np.array([0.1, 0, 0.016, -1.67, -0.477])
-    expected = np.array([-9.1, 1, 0.974, 13.67, 1.477])
-    test_RC = aggr.resource_constraint(Y, C, G, I_d, I_g, net_capital_flows)
+    adj_costs = 0.005
+    expected = np.array([-9.1, 1, 0.974, 13.67, 1.477]) - adj_costs
+    test_RC = aggr.resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, adj_costs)
 
     assert np.allclose(test_RC, expected)
 

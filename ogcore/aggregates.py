@@ -450,14 +450,17 @@ def get_r_p(r, r_gov, p_m, K_vec, K_g, D, MPKg_vec, p, method):
         ((1 - tau_b) * p_m * MPKg_vec * K_g).sum(axis=-1).reshape((T, 1))
         / K_vec.sum(axis=-1).reshape((T, 1))
     )
-    r_p = ((r_gov * D) + (r_K * K_vec.sum(axis=-1).reshape((T, 1)))) / (
+    agg_K = K_vec.sum(axis=-1).reshape((T, 1))
+    agg_Kp1 = np.vstack((agg_K[1:], agg_K[-1]))
+    adj_costs = adj_cost(agg_K, agg_Kp1, p, method):
+    r_p = ((r_gov * D) + (r_K * K_vec.sum(axis=-1).reshape((T, 1))) - adj_costs) / (
         D + K_vec.sum(axis=-1).reshape((T, 1))
     )
 
     return np.squeeze(r_p)
 
 
-def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows):
+def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, adj_costs):
     r"""
     Compute the error in the resource constraint.
 
@@ -474,12 +477,13 @@ def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows):
         I_d (array_like): aggregate private investment from domestic households
         I_g (array_like): investment in government capital
         net_capital_flows (array_like): net capital outflows
+        adj_costs (array_like): capital adjustment costs
 
     Returns:
         rc_error (array_like): error in the resource constraint
 
     """
-    rc_error = Y - C - I_d - I_g - G - net_capital_flows
+    rc_error = Y - C - I_d - I_g - G - net_capital_flows - adj_costs
 
     return rc_error
 

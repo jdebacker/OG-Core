@@ -897,6 +897,8 @@ def SS_solver(
     I_g_vec_ss[-1] = I_g_ss
     net_capital_outflows_vec = np.zeros(p.M)
     net_capital_outflows_vec[-1] = net_capital_outflows
+    adj_cost_vec = np.zeros(p.M)
+    adj_cost_vec[-1] = aggr.adj_cost(Kss, Kss, p, "SS")
     RC = aggr.resource_constraint(
         Y_vec_ss,
         C_m_vec_ss,
@@ -904,6 +906,7 @@ def SS_solver(
         I_d_vec_ss,
         I_g_vec_ss,
         net_capital_outflows_vec,
+        adj_cost_vec
     )
     if VERBOSE:
         print("Foreign debt holdings = ", D_f_ss)
