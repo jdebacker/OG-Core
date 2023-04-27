@@ -576,3 +576,30 @@ def get_ptilde(p_i, tau_c, alpha_c, method="SS"):
         p_tilde = np.prod((((1 + tau_c) * p_i) / alpha_c) ** alpha_c, axis=1)
 
     return p_tilde
+
+
+def adj_cost(K, Kp1, p, method):
+    r'''
+    Aggregate capital adjustment costs
+
+    ..math::
+        \Psi(K_{t}, K_{t+1}) = \frac{\psi}{2}\biggr(\frac{\biggr(I_{t}}{K_{t}}-\mu\biggl)^{2}\biggl)K_{t}
+
+    Args:
+        K (array-like): Current period capital stock
+        Kp1 (array-like): One-period ahead capital stock
+        p (OG-USA Parameters class object): Model parameters
+        method (str): 'SS' or 'TPI'
+
+    Returns
+        Psi (array-like): Aggregate capital adjustment costs
+    '''
+    if method == 'SS':
+        ac_method = "total_ss"
+    else:
+        ac_method = "total_tpi"
+    Inv = get_I(None, Kp1, K, p, ac_method)
+
+    Psi = ((p.psi / 2) * (Inv / K - p.mu) ** 2) * K
+
+    return Psi

@@ -911,3 +911,52 @@ def test_get_ptilde(p_m, tau_c, alpha_c, method, expected):
     test_vals = aggr.get_ptilde(p_m, tau_c, alpha_c, method)
 
     assert np.allclose(test_vals, expected)
+
+
+p1 = Specifications()
+p1.psi = 4.0
+p1.g_n_ss = 0.01
+p1.g_y = 0.03
+p1.delta = 0.05
+p1.mu = 0.090759079
+K_1 = 5
+Kp1_1 = 5
+expected_Psi_1 = 0.0
+
+p2 = Specifications()
+p2.psi = 2.0
+p2.g_n_ss = 0.0
+p2.g_y = 0.03
+p2.delta = 0.05
+p2.mu = 0.05
+K_2 = 6
+Kp1_2 = 6
+Inv = aggr.get_I(None, Kp1_2, K_2, p2, "total_ss")
+expected_Psi_2 = 0.011527985 * Inv
+
+
+p3 = Specifications()
+p3.psi = 4.0
+p3.g_n_ss = 0.0
+p3.g_n = np.array([-0.01, 0.02, 0.03, 0.0])
+p3.T = 3
+p3.g_y = 0.04
+p3.delta = 0.05
+p3.mu = 0.05
+K_3 = np.array([4, 4.5, 5.5])
+Kp1_3 = np.array([4.5, 5.5, 5])
+Inv = aggr.get_I(None, Kp1_3, K_3, p3, "total_tpi")
+expected_Psi_3 = np.array([0.309124823, 0.534408906, -1.520508524]) * Inv
+
+
+@pytest.mark.parametrize('K,Kp1,p,method,expected',
+                         [(K_1, Kp1_1, p1, 'SS', expected_Psi_1),
+                         (K_2, Kp1_2, p2, 'SS', expected_Psi_2),
+                         (K_3, Kp1_3, p3, 'TPI', expected_Psi_3)],
+                         ids=['Zero cost', 'Non-zero cost', 'TPI'])
+def test_adj_cost(K, Kp1, p, method, expected):
+    '''
+    Test of the firm capital adjustment cost function.
+    '''
+    test_val = aggr.adj_cost(K, Kp1, p, method)
+    assert np.allclose(test_val, expected)
