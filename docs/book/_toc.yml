@@ -15,6 +15,7 @@ parts:
   - file: content/theory/firms
   - file: content/theory/government
   - file: content/theory/open_economy
+  - file: content/theory/trade
   - file: content/theory/financial
   - file: content/theory/market_clearing
   - file: content/theory/stationarization
