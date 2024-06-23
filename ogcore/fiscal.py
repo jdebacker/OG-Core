@@ -93,7 +93,7 @@ def D_G_path(r_gov, dg_fixed_values, p):
     else:
         t = 1
         while t < p.T - 1:
-            D[t] = (1 / growth[t]) * (
+            D[t] = (1 / (growth[t] * 1.02)) * (
                 (1 + r_gov[t - 1]) * D[t - 1]
                 + G[t - 1]
                 + I_g[t - 1]
@@ -105,7 +105,7 @@ def D_G_path(r_gov, dg_fixed_values, p):
             if (t >= p.tG1) and (t < p.tG2):
                 G[t] = (
                     growth[t + 1]
-                    * (p.rho_G * p.debt_ratio_ss * Y[t] + (1 - p.rho_G) * D[t])
+                    * (p.rho_G * p.debt_ratio_ss * Y[t] + (1 - p.rho_G) * (D[t]/1.02))
                     - (1 + r_gov[t]) * D[t]
                     + total_tax_revenue[t]
                     - agg_pension_outlays[t]
@@ -116,7 +116,7 @@ def D_G_path(r_gov, dg_fixed_values, p):
             elif t >= p.tG2:
                 G[t] = (
                     growth[t + 1] * (p.debt_ratio_ss * Y[t])
-                    - (1 + r_gov[t]) * D[t]
+                    - (1 + r_gov[t]) * (D[t] / 1.02)
                     + total_tax_revenue[t]
                     - agg_pension_outlays[t]
                     - I_g[t - 1]
@@ -128,7 +128,7 @@ def D_G_path(r_gov, dg_fixed_values, p):
         # in final period, growth rate has stabilized, so we can replace
         # growth[t+1] with growth[t]
         t = p.T - 1
-        D[t] = (1 / growth[t]) * (
+        D[t] = (1 / (growth[t] * 1.02)) * (
             (1 + r_gov[t - 1]) * D[t - 1]
             + G[t - 1]
             + I_g[t - 1]
@@ -147,7 +147,7 @@ def D_G_path(r_gov, dg_fixed_values, p):
             - UBI_outlays[t]
         )
         D[t + 1] = (1 / growth[t + 1]) * (
-            (1 + r_gov[t]) * D[t]
+            (1 + r_gov[t]) * (D[t] / 1.02)
             + G[t]
             + I_g[t - 1]
             + TR[t]
@@ -163,8 +163,8 @@ def D_G_path(r_gov, dg_fixed_values, p):
         D_f = np.zeros(p.T + 1)
         D_f[0] = p.initial_foreign_debt_ratio * D[0]
         for t in range(0, p.T):
-            D_f[t + 1] = (D_f[t] / growth[t + 1]) + (
-                p.zeta_D[t] * (D[t + 1] - (D[t] / growth[t + 1]))
+            D_f[t + 1] = (D_f[t] / (growth[t + 1] * 1.02)) + (
+                p.zeta_D[t] * (D[t + 1] - (D[t] / (growth[t + 1]) * 1.02))
             )
         D_d = D[: p.T] - D_f[: p.T]
         new_borrowing = (
