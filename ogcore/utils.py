@@ -5,12 +5,14 @@ import requests
 from zipfile import ZipFile
 import urllib
 from tempfile import NamedTemporaryFile
-from io import BytesIO, StringIO
+from io import BytesIO
 import numpy as np
 import pandas as pd
+from scipy.interpolate import CubicSpline
 import pickle
-from pkg_resources import resource_stream, Requirement
-import importlib.resources
+import urllib3
+import ssl
+import json
 
 EPSILON = 1e-10  # tolerance or comparison functions
 
@@ -73,28 +75,6 @@ def convex_combo(var1, var2, nu):
     """
     combo = nu * var1 + (1 - nu) * var2
     return combo
-
-
-def read_file(path, fname):
-    """
-    Read the contents of 'path'. If it does not exist, assume the file
-    is installed in a .egg file, and adjust accordingly.
-
-    Args:
-        path (str): path name for new directory
-        fname (str): filename
-
-    Returns:
-        file contents (str)
-
-    """
-
-    if not os.path.exists(os.path.join(path, fname)):
-        buf = resource_stream("ogcore", fname)
-        _bytes = buf.read()
-        return StringIO(_bytes.decode("utf-8"))
-    else:
-        return open(os.path.join(path, fname))
 
 
 def pickle_file_compare(
@@ -351,9 +331,9 @@ def get_initial_path(x1, xT, p, shape):
 
     Notes:
         The identifying assumptions for quadratic are the following:
-            1. `x1` is the value at time `t=0: x1 = c
+            1. `x1` is the value at time `t=0: x1 = c`
             2. `xT` is the value at time `t=T-1: xT = a*(T-1)^2 + b*(T-1) + c`
-            3. the slope of the path at `t=T-1` is 0: 0 = 2*a*(T-1) + b`
+            3. the slope of the path at `t=T-1` is 0: `0 = 2*a*(T-1) + b`
 
     """
     if shape == "linear":
@@ -887,3 +867,499 @@ def avg_by_bin(x, y, weights=None, bins=10, eql_pctl=True):
         raise ValueError(err_msg)
 
     return x_binned, y_binned, weights_binned
+
+
+def extrapolate_array(param_in, dims=None, item="Parameter Name"):
+    """
+    Extrapolates input values to fit model dimensions. Using this allows
+    users to input smaller dimensional arrays and have the model infer
+    that they want these extrapolated.
+
+    Example: User enters a constant for total factor productivity, Z_mt.
+    This function will create an array of size TxM where TFP is the same
+    for all industries in all years.
+
+    Args:
+        param_in (array_like): input parameter value
+        dims (tuple): size of each dimension param_out should take, note
+            that the first dimension is always T+S
+        item (str): parameter name, used to inform user if exception
+
+    Returns:
+        param_out (array_like): reshape parameter for use in OG-Core
+    """
+    if len(dims) == 1:
+        # this is the case for 1D arrays, they vary over the time path
+        if param_in.ndim > 1:
+            param_in = np.squeeze(param_in, axis=1)
+        if param_in.size > dims[0]:
+            param_in = param_in[: dims[0]]
+        param_out = np.concatenate(
+            (
+                param_in,
+                np.ones((dims[0] - param_in.size)) * param_in[-1],
+            )
+        )
+    elif len(dims) == 2:
+        # this is the case for 2D arrays, they vary over the time path
+        # and some other dimension (e.g., by industry)
+        if param_in.ndim == 1:
+            # case where enter single number, so assume constant
+            # across all dimensions
+            if param_in.shape[0] == 1:
+                param_out = np.ones((dims)) * param_in[0]
+            # case where user enters just one year for all types in 2nd dim
+            if param_in.shape[0] == dims[1]:
+                param_out = np.tile(param_in.reshape(1, dims[1]), (dims[0], 1))
+            else:
+                # case where user enters multiple years, but not full time
+                # path
+                # will assume they implied values the same across 2nd dim
+                # and will fill in all periods
+                param_out = np.concatenate(
+                    (
+                        param_in,
+                        np.ones((dims[0] - param_in.size)) * param_in[-1],
+                    )
+                )
+                param_out = np.tile(
+                    param_out.reshape(dims[0], 1), (1, dims[1])
+                )
+        elif param_in.ndim == 2:
+            # case where enter values along 2 dimensions, but those aren't
+            # complete
+            if param_in.shape[1] > 1 and param_in.shape[1] != dims[1]:
+                print(
+                    "please provide values of "
+                    + item
+                    + " for element in the 2nd dimension (or enter a "
+                    + "constant if the value is common across elements in "
+                    + "the second dimension}"
+                )
+                assert False
+            if param_in.shape[1] == 1:
+                # Case where enter just one value along the 2nd dim, will
+                # assume constant across it
+                param_in = np.tile(
+                    param_in.reshape(param_in.shape[0], 1), (1, dims[1])
+                )
+            if param_in.shape[0] > dims[0]:
+                # Case where enter a number of values along the time
+                # dimension that exceeds the length of the time path
+                param_in = param_in[: dims[0], :]
+            param_out = np.concatenate(
+                (
+                    param_in,
+                    np.ones(
+                        (
+                            dims[0] - param_in.shape[0],
+                            param_in.shape[1],
+                        )
+                    )
+                    * param_in[-1, :],
+                )
+            )
+    elif len(dims) == 3:
+        # this is the case for 3D arrays, they vary over the time path
+        # and two other dimensions (e.g., by age and ability type)
+        if param_in.ndim == 1:
+            # case if S x 1 input
+            assert param_in.shape[0] == dims[1]
+            param_out = np.tile(
+                (
+                    np.tile(param_in.reshape(dims[1], 1), (1, dims[2]))
+                    / dims[2]
+                ).reshape(1, dims[1], dims[2]),
+                (dims[0], 1, 1),
+            )
+        # this could be where vary by S and J or T and S
+        elif param_in.ndim == 2:
+            # case if S by J input
+            if param_in.shape[0] == dims[1]:
+                param_out = np.tile(
+                    param_in.reshape(1, dims[1], dims[2]),
+                    (dims[0], 1, 1),
+                )
+            # case if T by S input
+            elif param_in.shape[0] == dims[0] - dims[1]:
+                param_in = (
+                    np.tile(
+                        param_in.reshape(dims[0] - dims[1], dims[1], 1),
+                        (1, 1, dims[2]),
+                    )
+                    / dims[2]
+                )
+                param_out = np.concatenate(
+                    (
+                        param_in,
+                        np.tile(
+                            param_in[-1, :, :].reshape(1, dims[1], dims[2]),
+                            (dims[1], 1, 1),
+                        ),
+                    ),
+                    axis=0,
+                )
+            else:
+                print(item + " dimensions are: ", param_in.shape)
+                print("please give an " + item + " that is either SxJ or TxS")
+                assert False
+        elif param_in.ndim == 3:
+            # this is the case where input varies by T, S, J
+            if param_in.shape[0] > dims[0]:
+                param_out = param_in[: dims[0], :, :]
+            else:
+                param_out = np.concatenate(
+                    (
+                        param_in,
+                        np.tile(
+                            param_in[-1, :, :].reshape(1, dims[1], dims[2]),
+                            (dims[0] - param_in.shape[0], 1, 1),
+                        ),
+                    ),
+                    axis=0,
+                )
+
+    return param_out
+
+
+def extrapolate_nested_list(list_in, dims=(400, 80, 1)):
+    """
+    Function to extrapolate a nested list to a specified size.
+
+    Currently only set up for 3 deep nested lists, but could be
+    generalized to deeper or shallower lists.
+
+    Args:
+        list_in (list): list to extrapolate
+        dims (tuple): dimensions of the output list
+
+    Returns:
+        list_out (list): extrapolated list
+    """
+    T, S, num_params = dims
+    try:
+        list_in = list_in.tolist()  # in case parameters are numpy arrays
+    except AttributeError:  # catches if they are lists already
+        pass
+    assert isinstance(list_in, list), "please give a list"
+
+    def depth(L):
+        return isinstance(L, list) and max(map(depth, L)) + 1
+
+    # for now, just have this work for 3 deep lists since
+    # the only OG-Core use case is for tax function parameters
+    assert depth(list_in) == 3, "please give a list that is three lists deep"
+    assert depth(list_in) == len(
+        dims
+    ), "please make sure the depth of nested list is equal to the length of dims to extrapolate"
+    # Extrapolate along the first dimension
+    if len(list_in) > T + S:
+        list_in = list_in[: T + S]
+    if len(list_in) < T + S:
+        params_to_add = [list_in[-1]] * (T + S - len(list_in))
+        list_in.extend(params_to_add)
+    # Extrapolate along the second dimension
+    for t in range(len(list_in)):
+        if len(list_in[t]) > S:
+            list_in[t] = list_in[t][:S]
+        if len(list_in[t]) < S:
+            params_to_add = [list_in[t][-1]] * (S - len(list_in[t]))
+            list_in[t].extend(params_to_add)
+
+    return list_in
+
+
+class CustomHttpAdapter(requests.adapters.HTTPAdapter):
+    """
+    The UN Data Portal server doesn't support "RFC 5746 secure renegotiation". This causes and error when the client is using OpenSSL 3, which enforces that standard by default.
+    The fix is to create a custom SSL context that allows for legacy connections. This defines a function get_legacy_session() that should be used instead of requests().
+    """
+
+    # "Transport adapter" that allows us to use custom ssl_context.
+    def __init__(self, ssl_context=None, **kwargs):
+        self.ssl_context = ssl_context
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False):
+        self.poolmanager = urllib3.poolmanager.PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            ssl_context=self.ssl_context,
+        )
+
+
+def get_legacy_session():
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT  #in Python 3.12 you will be able to switch from 0x4 to ssl.OP_LEGACY_SERVER_CONNECT.
+    session = requests.session()
+    session.mount("https://", CustomHttpAdapter(ctx))
+    return session
+
+
+def shift_bio_clock(
+    param_in,
+    initial_effect_period=1,
+    final_effect_period=1,
+    total_effect=1,
+    min_age_effect_felt=20,
+    bound_below=False,
+    bound_above=False,
+    use_spline=False,
+):
+    """
+    This function takes an initial array of parameters that has a time
+    dimension and an age dimension. It then applies a shift along the
+    age dimension (i.e., a change in the "biological clock") and phases
+    this shift in over some period of time.
+
+    Args:
+        param_in (Numpy array): initial parameter values, first two
+            dimensions must be time then age, respectively
+        initial_effect_period (int): first model period when transition
+            to new parameter values occurs
+        final_effect_period (int): model period when effect is fully
+            phased in (so transition from param_in to param_out happens
+            between model periods `initial_effect_period` and
+            `final_effect_period`)
+        total_effect (float): total number of model periods to shift
+            the biological clock (allows for fractions of periods)
+        min_age_effect_felt (int): minimum age at which the effect of
+            the transition is felt in model periods
+        bound_below (bool): whether param_out bounded below by param_in
+        bound_above (bool): whether param_out bounded above by param_in
+        use_spline (bool): whether to use a cubic spline to interpolate
+            tail of param_out
+
+    Returns:
+        param_out (Numpy array): updated parameter values
+    """
+    assert (
+        total_effect >= 0
+    )  # this code would need to change to accommodate effects < 0
+    n_dims = param_in.ndim
+    assert n_dims >= 2
+    T = param_in.shape[1]
+    S = param_in.shape[1]
+
+    # create a linear transition path
+    t = (
+        final_effect_period - initial_effect_period + 1
+    )  # number of periods transition over
+    transition_path = np.linspace(0, 1.0, t)
+    transition_arr = np.zeros_like(param_in, dtype=float)
+    for i in range(t):
+        transition_arr[initial_effect_period + i, ...] = transition_path[
+            i
+        ] * np.ones_like(param_in[0, ...])
+    transition_arr[final_effect_period:, ...] = np.ones_like(
+        param_in[final_effect_period:, ...]
+    )
+
+    param_shift = param_in.copy()
+    # Accounting for shifts that are fractions of a model period
+    total_effect_ru = int(np.ceil(total_effect))
+    if total_effect > 0:
+        pct_effect = total_effect / total_effect_ru
+    else:
+        pct_effect = 0
+    # apply the transition path to the initial parameters
+    # find diff from shifting bio clock back total_effect years
+    param_shift[:, min_age_effect_felt:, ...] = param_in[
+        :, (min_age_effect_felt - total_effect_ru) : S - total_effect_ru, ...
+    ]
+    if use_spline:
+        # use cubic spline to avoid plateau at end of lifecycle profile
+        T = param_in.shape[0]
+        if n_dims == 3:
+            J = param_in.shape[-1]
+            for k in range(initial_effect_period, T):
+                for j in range(J):
+                    spline = CubicSpline(
+                        np.arange(S - total_effect),
+                        param_shift[k, :-total_effect, j],
+                    )
+                    param_shift[k, -total_effect:, j] = spline(
+                        np.arange(S - total_effect, S)
+                    )
+        else:
+            for k in range(initial_effect_period, T):
+                spline = CubicSpline(
+                    np.arange(S - total_effect), param_shift[k, :-total_effect]
+                )
+                param_shift[k, -total_effect:] = spline(
+                    np.arange(S - total_effect, S)
+                )
+    # make sure values are not lower after shift
+    if bound_below:
+        param_shift = np.maximum(param_shift, param_in)
+    # make sure values are not higher after shift
+    if bound_above:
+        param_shift = np.minimum(param_shift, param_in)
+    # Now transition the shift over time using the transition path
+    param_out = param_in + (
+        transition_arr * pct_effect * (param_shift - param_in)
+    )
+
+    return param_out
+
+
+def pct_change_unstationarized(
+    tpi_base,
+    param_base,
+    tpi_reform,
+    param_reform,
+    output_vars=["K", "Y", "C", "L", "r", "w"],
+):
+    """
+    This function takes the time paths of variables from the baseline
+    and reform and parameters from the baseline and reform runs and
+    computes percent changes for each variable in the output_vars list.
+    The function first unstationarizes the time paths of the variables
+    and then computes the percent changes.
+
+    Args:
+        tpi_base (Numpy array): time path of the output variables from
+            the baseline run
+        param_base (Specifications object): dictionary of parameters
+            from the baseline run
+        tpi_reform (Numpy array): time path of the output variables from
+            the reform run
+        param_reform (Specifications object): dictionary of parameters
+            from the reform run
+        output_vars (list): list of variables for which to compute
+            percent changes
+
+    Returns:
+        pct_changes (dict): dictionary of percent changes for each
+            variable in output_vars list
+    """
+    # compute non-stationary variables
+    non_stationary_output = {"base": {}, "reform": {}}
+    pct_changes = {}
+    T = param_base.T
+    for var in output_vars:
+        if var in [
+            "Y",
+            "B",
+            "K",
+            "K_f",
+            "K_d",
+            "C",
+            "I",
+            "K_g",
+            "I_g",
+            "Y_vec",
+            "K_vec",
+            "C_vec",
+            "I_total",
+            "I_d",
+            "BQ",
+            "TR",
+            "total_tax_revenue",
+            "business_tax_revenue",
+            "iit_payroll_tax_revenue",
+            "iit_revenue",
+            "payroll_tax_revenue",
+            "agg_pension_outlays",
+            "bequest_tax_revenue",
+            "wealth_tax_revenue",
+            "cons_tax_revenue",
+            "G",
+            "D",
+            "D_f",
+            "D_d",
+            "UBI_path",
+            "new_borrowing_f",
+            "debt_service_f",
+        ]:
+            non_stationary_output["base"][var] = (
+                tpi_base[var][:T]
+                * np.cumprod(1 + param_base.g_n[:T])
+                * np.exp(param_base.g_y * np.arange(param_base.T))
+            )
+            non_stationary_output["reform"][var] = (
+                tpi_reform[var][:T]
+                * np.cumprod(1 + param_reform.g_n[:T])
+                * np.exp(param_reform.g_y * np.arange(param_reform.T))
+            )
+        elif var in [
+            "L",
+            "L_vec",
+        ]:
+            non_stationary_output["base"][var] = tpi_base[var][
+                :T
+            ] * np.cumprod(1 + param_base.g_n[:T])
+            non_stationary_output["reform"][var] = tpi_reform[var][
+                :T
+            ] * np.cumprod(1 + param_reform.g_n[:T])
+        elif var in [
+            "w",
+            "ubi_path",
+            "tr_path",
+            "bq_path",
+            "bmat_splus1",
+            "bmat_s",
+            "c_path",
+            "y_before_tax_path",
+            "tax_path",
+        ]:
+            non_stationary_output["base"][var] = tpi_base[var][:T] * np.exp(
+                param_base.g_y * np.arange(param_base.T)
+            )
+            non_stationary_output["reform"][var] = tpi_reform[var][
+                :T
+            ] * np.exp(param_reform.g_y * np.arange(param_reform.T))
+        else:
+            non_stationary_output["base"][var] = tpi_base[var][:T]
+            non_stationary_output["reform"][var] = tpi_reform[var][:T]
+
+        # calculate percent change
+        pct_changes[var] = (
+            non_stationary_output["reform"][var]
+            / non_stationary_output["base"][var]
+            - 1
+        )
+
+    return pct_changes
+
+
+def param_dump_json(p, path=None):
+    """
+    This function creates a JSON file with the model parameters of the
+    format used for the default_parameters.json file.
+
+    Args:
+        p (OG-Core Specifications class): model parameters object
+        path (string): path to save JSON file to
+
+    Returns:
+        JSON (string): JSON on model parameters
+    """
+    converted_data = {}
+    spec = p.specification(
+        meta_data=False, include_empty=True, serializable=True, use_state=True
+    )
+    for key in p.keys():
+        val = dict(spec[key][0])["value"]
+        if isinstance(val, np.ndarray):
+            converted_data[key] = val.tolist()
+        else:
+            converted_data[key] = val
+
+    # Parameters that need to be turned into annual rates for default_parameters.json
+    # g_y_annual
+    # beta_annual
+    # delta_annual
+    # delta_tau_annual
+    # delta_g_annual
+    # world_int_rate_annual
+
+    # Convert to JSON string
+    json_str = json.dumps(converted_data, indent=4)
+
+    if path is not None:
+        with open(path, "w") as f:
+            f.write(json_str)
+    else:
+        return json_str

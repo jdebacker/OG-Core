@@ -5,70 +5,18 @@ from ogcore import tax
 from ogcore.parameters import Specifications
 
 
-p = Specifications()
-new_param_values = {
-    "S": 4,
-    "lambdas": [1.0],
-    "labor_income_tax_noncompliance_rate": [[0.0]],
-    "capital_income_tax_noncompliance_rate": [[0.0]],
-    "J": 1,
-    "T": 4,
-    "eta": (np.ones((4, 1)) / (4 * 1)),
-}
-p.update_specifications(new_param_values)
-p.retire = [3, 3, 3, 3, 3, 3, 3, 3]
-p1 = copy.deepcopy(p)
-p2 = copy.deepcopy(p)
-p3 = copy.deepcopy(p)
-# Use just a column of e
-p1.e = np.transpose(np.array([[0.1, 0.3, 0.5, 0.2], [0.1, 0.3, 0.5, 0.2]]))
-# e has two dimensions
-p2.e = np.array([[0.4, 0.3], [0.5, 0.4], [0.6, 0.4], [0.4, 0.3]])
-p3.e = np.array([[0.35, 0.3], [0.55, 0.4], [0.65, 0.4], [0.45, 0.3]])
-p5 = copy.deepcopy(p3)
-p5.PIA_minpayment = 125.0
-wss = 0.5
-n1 = np.array([0.5, 0.5, 0.5, 0.5])
-n2 = nssmat = np.array([[0.4, 0.4], [0.4, 0.4], [0.4, 0.4], [0.4, 0.4]])
-n3 = nssmat = np.array([[0.3, 0.35], [0.3, 0.35], [0.3, 0.35], [0.3, 0.35]])
-factor1 = 100000
-factor3 = 10000
-factor4 = 1000
-expected1 = np.array([0.042012])
-expected2 = np.array([0.042012, 0.03842772])
-expected3 = np.array([0.1145304, 0.0969304])
-expected4 = np.array([0.1755, 0.126])
-expected5 = np.array([0.1755, 0.126 * 1.1904761904761905])
-
-test_data = [
-    (n1, wss, factor1, 0, p1, expected1),
-    (n2, wss, factor1, None, p2, expected2),
-    (n3, wss, factor3, None, p3, expected3),
-    (n3, wss, factor4, None, p3, expected4),
-    (n3, wss, factor4, None, p5, expected5),
-]
-
-
-@pytest.mark.parametrize(
-    "n,w,factor,j,p,expected",
-    test_data,
-    ids=["1D e", "2D e", "AIME case 2", "AIME case 3", "Min PIA case"],
-)
-def test_replacement_rate_vals(n, w, factor, j, p, expected):
-    # Test replacement rate function, making sure to trigger all three
-    # cases of AIME
-
-    theta = tax.replacement_rate_vals(n, w, factor, j, p)
-    assert np.allclose(theta, expected)
-
-
 b1 = np.array([0.1, 0.5, 0.9])
 p1 = Specifications()
+rho_vec = np.zeros((1, 3))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "S": 3,
+    "rho": rho_vec.tolist(),
     "lambdas": [1.0],
     "J": 1,
     "T": 3,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, 1)),
     "eta": (np.ones((3, 1)) / (3 * 1)),
     "h_wealth": [2],
     "p_wealth": [3],
@@ -81,9 +29,12 @@ expected1 = np.array([0.14285714, 0.6, 0.93103448])
 p2 = Specifications()
 new_param_values2 = {
     "S": 3,
+    "rho": rho_vec.tolist(),
     "lambdas": [1.0],
     "J": 1,
     "T": 3,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, 1)),
     "eta": (np.ones((3, 1)) / (3 * 1)),
     "h_wealth": [1.2, 1.1, 2.3],
     "p_wealth": [2.2, 2.3, 1.8],
@@ -113,9 +64,12 @@ b1 = np.array([0.2, 0.6, 0.8])
 p1 = Specifications()
 new_param_values = {
     "S": 3,
+    "rho": rho_vec.tolist(),
     "lambdas": [1.0],
     "J": 1,
     "T": 3,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, 1)),
     "eta": (np.ones((3, 1)) / (3 * 1)),
     "h_wealth": [3],
     "p_wealth": [4],
@@ -129,9 +83,12 @@ b2 = np.array([0.1, 0.5, 0.9])
 p2 = Specifications()
 new_param_values2 = {
     "S": 3,
+    "rho": rho_vec.tolist(),
     "lambdas": [1.0],
     "J": 1,
     "T": 3,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, 1)),
     "eta": (np.ones((3, 1)) / (3 * 1)),
     "h_wealth": [1.2, 1.1, 2.3],
     "p_wealth": [2.2, 2.3, 1.8],
@@ -866,6 +823,9 @@ new_param_values1 = {
     "inv_tax_credit": [[0.02]],
     "T": 3,
     "S": 3,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, p1.J)),
+    "rho": rho_vec.tolist(),
     "eta": (np.ones((3, p1.J)) / (3 * p1.J)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
@@ -1193,6 +1153,9 @@ new_param_values_ubi = {
     "T": 3,
     "S": 3,
     "J": 2,
+    "chi_n": np.ones(3),
+    "e": np.ones((3, 2)),
+    "rho": rho_vec.tolist(),
     "lambdas": [0.65, 0.35],
     "eta": (np.ones((3, 2)) / (3 * 2)),
     "ubi_nom_017": 1000,

@@ -6,7 +6,7 @@ Functions to compute economic aggregates.
 
 # Packages
 import numpy as np
-from ogcore import tax
+from ogcore import tax, pensions
 
 """
 -------------------------------------------------------------------------------
@@ -33,7 +33,11 @@ def get_L(n, p, method):
 
     """
     if method == "SS":
-        L_presum = p.e * np.transpose(p.omega_SS * p.lambdas) * n
+        L_presum = (
+            np.squeeze(p.e[-1, :, :])
+            * np.transpose(p.omega_SS * p.lambdas)
+            * n
+        )
         L = L_presum.sum()
     elif method == "TPI":
         L_presum = (n * (p.e * np.squeeze(p.lambdas))) * np.tile(
@@ -186,26 +190,32 @@ def get_BQ(r, b_splus1, j, p, method, preTP):
         if preTP:
             omega = p.omega_S_preTP
             pop_growth_rate = p.g_n[0]
+            rho = p.rho[0, :]
         else:
             omega = p.omega_SS
             pop_growth_rate = p.g_n_ss
+            rho = p.rho[-1, :]
         if j is not None:
-            BQ_presum = omega * p.rho * b_splus1 * p.lambdas[j]
+            BQ_presum = omega * rho * b_splus1 * p.lambdas[j]
         else:
-            BQ_presum = np.transpose(omega * (p.rho * p.lambdas)) * b_splus1
+            BQ_presum = np.transpose(omega * (rho * p.lambdas)) * b_splus1
         BQ = BQ_presum.sum(0)
         BQ *= (1.0 + r) / (1.0 + pop_growth_rate)
     elif method == "TPI":
         pop = np.append(
             p.omega_S_preTP.reshape(1, p.S), p.omega[: p.T - 1, :], axis=0
         )
+        rho = np.append(
+            p.rho[0, :].reshape(1, p.S), p.rho[: p.T - 1, :], axis=0
+        )
+
         if j is not None:
-            BQ_presum = (b_splus1 * p.lambdas[j]) * (pop * p.rho)
+            BQ_presum = (b_splus1 * p.lambdas[j]) * (pop * rho)
             BQ = BQ_presum.sum(1)
             BQ *= (1.0 + r) / (1.0 + p.g_n[: p.T])
         else:
             BQ_presum = (b_splus1 * np.squeeze(p.lambdas)) * np.tile(
-                np.reshape(pop * p.rho, (p.T, p.S, 1)), (1, 1, p.J)
+                np.reshape(pop * rho, (p.T, p.S, 1)), (1, 1, p.J)
             )
             BQ = BQ_presum.sum(1)
             BQ *= np.tile(
@@ -278,6 +288,7 @@ def revenue(
     ubi,
     theta,
     etr_params,
+    e,
     p,
     m,
     method,
@@ -311,6 +322,7 @@ def revenue(
             lifetime income group
         etr_params (list): list of parameters of the effective tax rate
             functions
+        e (Numpy array): effective labor units
         p (OG-Core Specifications object): model parameters
         method (str): adjusts calculation dimensions based on 'SS' or
             'TPI'
@@ -333,10 +345,10 @@ def revenue(
 
     """
     inc_pay_tax_liab = tax.income_tax_liab(
-        r, w, b, n, factor, 0, None, method, p.e, etr_params, p
+        r, w, b, n, factor, 0, None, method, e, etr_params, p
     )
-    pension_benefits = tax.pension_amount(
-        w, n, theta, 0, None, False, method, p.e, p
+    pension_benefits = pensions.pension_amount(
+        r, w, n, Y, theta, 0, None, False, method, e, factor, p
     )
     bq_tax_liab = tax.bequest_tax_liab(r, b, bq, 0, None, method, p)
     w_tax_liab = tax.wealth_tax_liab(r, b, 0, None, method, p)

@@ -24,6 +24,13 @@ Set flag for enforcement of solution check
 """
 ENFORCE_SOLUTION_CHECKS = True
 
+"""
+A global future for the Parameters object for client workers.
+This is scattered once and place at module scope, then used
+by the client in the inner loop.
+"""
+scattered_p = None
+
 
 def get_initial_SS_values(p):
     """
@@ -154,8 +161,7 @@ def firstdoughnutring(
         np.array([tr]),
         np.array([ubi]),
         theta[j],
-        p.e[-1, j],
-        p.rho[-1],
+        p.rho[0, -1],
         p.etr_params[0][-1],
         p.mtry_params[0][-1],
         None,
@@ -176,8 +182,7 @@ def firstdoughnutring(
         np.array([tr]),
         np.array([ubi]),
         theta[j],
-        p.chi_n[-1],
-        p.e[-1, j],
+        p.chi_n[0, -1],
         p.etr_params[0][-1],
         p.mtrx_params[0][-1],
         None,
@@ -260,9 +265,8 @@ def twist_doughnut(
     r_s = r[t : t + length]
     p_tilde_s = p_tilde[t : t + length]
     n_s = n_guess
-    chi_n_s = p.chi_n[-length:]
-    e_s = p.e[-length:, j]
-    rho_s = p.rho[-length:]
+    chi_n_s = np.diag(p.chi_n[t : t + p.S, :], max(p.S - length, 0))
+    rho_s = np.diag(p.rho[t : t + p.S, :], max(p.S - length, 0))
 
     error1 = household.FOC_savings(
         r_s,
@@ -276,7 +280,6 @@ def twist_doughnut(
         tr,
         ubi,
         theta,
-        e_s,
         rho_s,
         etr_params,
         mtry_params,
@@ -299,7 +302,6 @@ def twist_doughnut(
         ubi,
         theta,
         chi_n_s,
-        e_s,
         etr_params,
         mtrx_params,
         t,
@@ -534,6 +536,12 @@ def run_TPI(p, client=None):
             results
 
     """
+    global scattered_p
+    if client:
+        scattered_p = client.scatter(p, broadcast=True)
+    else:
+        scattered_p = p
+
     # unpack tuples of parameters
     initial_values, ss_vars, theta, baseline_values = get_initial_SS_values(p)
     (B0, b_sinit, b_splus1init, factor, initial_b, initial_n) = initial_values
@@ -724,10 +732,6 @@ def run_TPI(p, client=None):
 
         euler_errors = np.zeros((p.T, 2 * p.S, p.J))
         lazy_values = []
-        if client:
-            scattered_p = client.scatter(p, broadcast=True)
-        else:
-            scattered_p = p
         for j in range(p.J):
             guesses = (guesses_b[:, :, j], guesses_n[:, :, j])
             lazy_values.append(
@@ -748,7 +752,7 @@ def run_TPI(p, client=None):
             results = results = compute(
                 *lazy_values,
                 scheduler=dask.multiprocessing.get,
-                num_workers=p.num_workers
+                num_workers=p.num_workers,
             )
 
         for j, result in enumerate(results):
@@ -823,6 +827,7 @@ def run_TPI(p, client=None):
             bmat_s[: p.T, :, :],
             n_mat[: p.T, :, :],
             p,
+            "TPI",
         )
 
         L[: p.T] = aggr.get_L(n_mat[: p.T], p, "TPI")
@@ -908,6 +913,7 @@ def run_TPI(p, client=None):
             ubi[: p.T, :, :],
             theta,
             etr_params_4D,
+            p.e,
             p,
             None,
             "TPI",
@@ -1014,6 +1020,7 @@ def run_TPI(p, client=None):
             ubi[: p.T, :, :],
             theta,
             etr_params_4D,
+            p.e,
             p,
             None,
             "TPI",
@@ -1143,7 +1150,7 @@ def run_TPI(p, client=None):
         ),
         (1, p.S, 1),
     )
-    e_3D = np.tile(p.e.reshape(1, p.S, p.J), (p.T, 1, 1))
+    e_3D = p.e
     mtry_path = tax.MTR_income(
         r_p_path[: p.T],
         wpath[: p.T],
@@ -1242,61 +1249,61 @@ def run_TPI(p, client=None):
     """
 
     output = {
-        "Y": Y[: p.T],
-        "B": B,
-        "K": K,
-        "K_f": K_f,
-        "K_d": K_d,
-        "L": L,
-        "C": C,
-        "I": I,
-        "K_g": K_g,
-        "I_g": I_g,
-        "Y_vec": Y_vec,
-        "K_vec": K_vec,
-        "L_vec": L_vec,
-        "C_vec": C_vec,
-        "I_total": I_total,
-        "I_d": I_d,
-        "BQ": BQ,
-        "total_tax_revenue": total_tax_revenue,
-        "business_tax_revenue": business_tax_revenue,
-        "iit_payroll_tax_revenue": iit_payroll_tax_revenue,
-        "iit_revenue": iit_revenue,
-        "payroll_tax_revenue": payroll_tax_revenue,
-        "TR": TR,
-        "agg_pension_outlays": agg_pension_outlays,
-        "bequest_tax_revenue": bequest_tax_revenue,
-        "wealth_tax_revenue": wealth_tax_revenue,
-        "cons_tax_revenue": cons_tax_revenue,
-        "G": G,
-        "D": D,
-        "D_f": D_f,
-        "D_d": D_d,
-        "r": r,
-        "r_gov": r_gov,
-        "r_p": r_p,
-        "w": w,
-        "bmat_splus1": bmat_splus1,
-        "p_m": p_m,
-        "p_tilde": p_tilde,
-        "bmat_s": bmat_s[: p.T, :, :],
-        "n_mat": n_mat[: p.T, :, :],
-        "c_path": c_mat,
-        "bq_path": bqmat,
-        "tr_path": trmat,
-        "y_before_tax_mat": y_before_tax_mat,
-        "tax_path": tax_mat,
-        "eul_savings": eul_savings,
-        "eul_laborleisure": eul_laborleisure,
-        "resource_constraint_error": RC_error,
-        "new_borrowing_f": new_borrowing_f,
-        "debt_service_f": debt_service_f,
-        "etr_path": etr_path,
-        "mtrx_path": mtrx_path,
-        "mtry_path": mtry_path,
-        "ubi_path": ubi,
-        "UBI_path": UBI,
+        "Y": Y[: p.T, ...],
+        "B": B[: p.T, ...],
+        "K": K[: p.T, ...],
+        "K_f": K_f[: p.T],
+        "K_d": K_d[: p.T, ...],
+        "L": L[: p.T, ...],
+        "C": C[: p.T, ...],
+        "I": I[: p.T, ...],
+        "K_g": K_g[: p.T, ...],
+        "I_g": I_g[: p.T, ...],
+        "Y_vec": Y_vec[: p.T, ...],
+        "K_vec": K_vec[: p.T, ...],
+        "L_vec": L_vec[: p.T, ...],
+        "C_vec": C_vec[: p.T, ...],
+        "I_total": I_total[: p.T, ...],
+        "I_d": I_d[: p.T, ...],
+        "BQ": BQ[: p.T, ...],
+        "total_tax_revenue": total_tax_revenue[: p.T, ...],
+        "business_tax_revenue": business_tax_revenue[: p.T, ...],
+        "iit_payroll_tax_revenue": iit_payroll_tax_revenue[: p.T, ...],
+        "iit_revenue": iit_revenue[: p.T, ...],
+        "payroll_tax_revenue": payroll_tax_revenue[: p.T, ...],
+        "TR": TR[: p.T, ...],
+        "agg_pension_outlays": agg_pension_outlays[: p.T, ...],
+        "bequest_tax_revenue": bequest_tax_revenue[: p.T, ...],
+        "wealth_tax_revenue": wealth_tax_revenue[: p.T, ...],
+        "cons_tax_revenue": cons_tax_revenue[: p.T, ...],
+        "G": G[: p.T, ...],
+        "D": D[: p.T, ...],
+        "D_f": D_f[: p.T, ...],
+        "D_d": D_d[: p.T, ...],
+        "r": r[: p.T, ...],
+        "r_gov": r_gov[: p.T, ...],
+        "r_p": r_p[: p.T, ...],
+        "w": w[: p.T, ...],
+        "bmat_splus1": bmat_splus1[: p.T, ...],
+        "p_m": p_m[: p.T, ...],
+        "p_tilde": p_tilde[: p.T, ...],
+        "bmat_s": bmat_s[: p.T, ...],
+        "n_mat": n_mat[: p.T, ...],
+        "c_path": c_mat[: p.T, ...],
+        "bq_path": bqmat[: p.T, ...],
+        "tr_path": trmat[: p.T, ...],
+        "y_before_tax_mat": y_before_tax_mat[: p.T, ...],
+        "tax_path": tax_mat[: p.T, ...],
+        "eul_savings": eul_savings[: p.T, ...],
+        "eul_laborleisure": eul_laborleisure[: p.T, ...],
+        "resource_constraint_error": RC_error[: p.T, ...],
+        "new_borrowing_f": new_borrowing_f[: p.T, ...],
+        "debt_service_f": debt_service_f[: p.T, ...],
+        "etr_path": etr_path[: p.T, ...],
+        "mtrx_path": mtrx_path[: p.T, ...],
+        "mtry_path": mtry_path[: p.T, ...],
+        "ubi_path": ubi[: p.T, ...],
+        "UBI_path": UBI[: p.T, ...],
     }
 
     tpi_dir = os.path.join(p.output_base, "TPI")
@@ -1318,9 +1325,7 @@ def run_TPI(p, client=None):
             "Transition path equlibrium not found" + " (TPIdist)"
         )
 
-    if (
-        np.any(np.absolute(RC_error) >= p.mindist_TPI * 10)
-    ) and ENFORCE_SOLUTION_CHECKS:
+    if (np.any(np.absolute(RC_error) >= p.RC_TPI)) and ENFORCE_SOLUTION_CHECKS:
         raise RuntimeError(
             "Transition path equlibrium not found " + "(RC_error)"
         )

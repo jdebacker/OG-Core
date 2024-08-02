@@ -40,18 +40,20 @@ def test_compute_default_params():
 param_updates1 = {
     "T": 4,
     "S": 3,
-    "J": 1,
+    "rho": [[0.0, 0.0, 1.0]],
+    "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "eta": np.ones((4, 3, 1)) / 12,
     "ubi_nom_1864": 1200,
     "ubi_nom_65p": 400,
     "ubi_growthadj": True,
 }
-expected1 = np.ones((7, 3, 1)) * 2180
+expected1 = np.ones((7, 3, 7)) * 2180
 param_updates2 = {
     "T": 4,
     "S": 3,
-    "J": 1,
+    "rho": [[0.0, 0.0, 1.0]],
+    "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "eta": np.ones((4, 3, 1)) / 12,
     "ubi_nom_1864": 1200,
@@ -59,11 +61,12 @@ param_updates2 = {
     "ubi_nom_65p": 400,
     "ubi_growthadj": True,
 }
-expected2 = np.ones((7, 3, 1)) * 2000
+expected2 = np.ones((7, 3, 7)) * 2000
 param_updates3 = {
     "T": 4,
     "S": 3,
-    "J": 1,
+    "rho": [[0.0, 0.0, 1.0]],
+    "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "eta": np.ones((4, 3, 1)) / 12,
     "ubi_nom_1864": 1200,
@@ -157,7 +160,7 @@ def test_implement_bad_reform2():
     assert len(specs.errors) > 0
     assert specs.errors["tax_func_type"][0] == (
         'tax_func_type "not_a_functional_form" must be in list of '
-        + "choices DEP, DEP_totalinc, GS, linear, mono, mono2D."
+        + "choices DEP, DEP_totalinc, GS, HSV, linear, mono, mono2D."
     )
 
 
@@ -186,3 +189,12 @@ def test_conditional_validator():
     new_specs = {"budget_balance": True, "baseline_spending": True}
     specs.update_specifications(new_specs, raise_errors=False)
     assert len(specs.errors) > 0
+
+
+def test_expand_taxfunc_params():
+    specs = Specifications()
+    new_specs = {"etr_params": [[[0.35]]]}
+    specs.update_specifications(new_specs)
+    assert len(specs.etr_params) == specs.T + specs.S
+    assert len(specs.etr_params[0]) == specs.S
+    assert specs.etr_params[0][0][0] == 0.35

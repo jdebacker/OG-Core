@@ -4,6 +4,7 @@ Tests of output_tables.py module
 
 import pytest
 import os
+import sys
 import pandas as pd
 import numpy as np
 from ogcore import utils, output_tables
@@ -17,18 +18,30 @@ base_ss = utils.safe_read_pickle(
 base_tpi = utils.safe_read_pickle(
     os.path.join(CUR_PATH, "test_io_data", "TPI_vars_baseline.pkl")
 )
-base_params = utils.safe_read_pickle(
-    os.path.join(CUR_PATH, "test_io_data", "model_params_baseline.pkl")
-)
+if sys.version_info[1] < 11:
+    base_params = utils.safe_read_pickle(
+        os.path.join(CUR_PATH, "test_io_data", "model_params_baseline.pkl")
+    )
+else:
+    base_params = utils.safe_read_pickle(
+        os.path.join(
+            CUR_PATH, "test_io_data", "model_params_baseline_v311.pkl"
+        )
+    )
 reform_ss = utils.safe_read_pickle(
     os.path.join(CUR_PATH, "test_io_data", "SS_vars_reform.pkl")
 )
 reform_tpi = utils.safe_read_pickle(
     os.path.join(CUR_PATH, "test_io_data", "TPI_vars_reform.pkl")
 )
-reform_params = utils.safe_read_pickle(
-    os.path.join(CUR_PATH, "test_io_data", "model_params_reform.pkl")
-)
+if sys.version_info[1] < 11:
+    reform_params = utils.safe_read_pickle(
+        os.path.join(CUR_PATH, "test_io_data", "model_params_reform.pkl")
+    )
+else:
+    reform_params = utils.safe_read_pickle(
+        os.path.join(CUR_PATH, "test_io_data", "model_params_reform_v311.pkl")
+    )
 # add investment tax credit parameter that not in cached parameters
 base_params.inv_tax_credit = np.zeros(
     (base_params.T + base_params.S, base_params.M)
@@ -38,19 +51,25 @@ reform_params.inv_tax_credit = np.zeros(
 )
 
 test_data = [
-    (base_tpi, base_params, reform_tpi, reform_params, "pct_diff"),
-    (base_tpi, base_params, reform_tpi, reform_params, "diff"),
-    (base_tpi, base_params, reform_tpi, reform_params, "levels"),
+    (base_tpi, base_params, reform_tpi, reform_params, "pct_diff", False),
+    (base_tpi, base_params, reform_tpi, reform_params, "diff", False),
+    (base_tpi, base_params, reform_tpi, reform_params, "levels", False),
+    (base_tpi, base_params, reform_tpi, reform_params, "pct_diff", True),
 ]
 
 
 @pytest.mark.parametrize(
-    "base_tpi,base_params,reform_tpi,reform_params,output_type",
+    "base_tpi,base_params,reform_tpi,reform_params,output_type,stationarized",
     test_data,
-    ids=["Pct Diff", "Diff", "Levels"],
+    ids=["Pct Diff", "Diff", "Levels", "Unstationary pct diff"],
 )
 def test_macro_table(
-    base_tpi, base_params, reform_tpi, reform_params, output_type
+    base_tpi,
+    base_params,
+    reform_tpi,
+    reform_params,
+    output_type,
+    stationarized,
 ):
     df = output_tables.macro_table(
         base_tpi,
@@ -59,6 +78,7 @@ def test_macro_table(
         reform_params=reform_params,
         start_year=2023,
         output_type=output_type,
+        stationarized=stationarized,
         include_SS=True,
         include_overall=True,
     )
@@ -135,6 +155,19 @@ def test_dynamic_revenue_decomposition(include_business_tax, full_break_out):
     )
     reform_params.capital_income_tax_noncompliance_rate = np.zeros(
         (reform_params.T, reform_params.J)
+    )
+    # check if tax parameters are a numpy array
+    # this is relevant for cached parameter arrays saved before
+    # tax params were put in lists
+    if isinstance(base_params.etr_params, np.ndarray):
+        base_params.etr_params = base_params.etr_params.tolist()
+    if isinstance(reform_params.etr_params, np.ndarray):
+        reform_params.etr_params = reform_params.etr_params.tolist()
+    print("M = ", base_params.M, reform_params.M)
+    print(
+        "Shape of M implied by output = ",
+        base_tpi["p_m"].shape,
+        reform_tpi["p_m"].shape,
     )
     df = output_tables.dynamic_revenue_decomposition(
         base_params,

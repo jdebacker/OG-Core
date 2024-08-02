@@ -6,10 +6,14 @@ from ogcore.parameters import Specifications
 
 
 p = Specifications()
+rho_vec = np.zeros((1, 40))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 160,
     "S": 40,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((40, 2)) / (40 * 2)),
@@ -26,7 +30,7 @@ for t in range(p.T):
     for i in range(p.S):
         for k in range(p.J):
             L_loop[t, i, k] *= (
-                p.omega[t, i] * p.lambdas[k] * n[t, i, k] * p.e[i, k]
+                p.omega[t, i] * p.lambdas[k] * n[t, i, k] * p.e[t, i, k]
             )
 expected1 = L_loop[-1, :, :].sum()
 expected2 = L_loop.sum(1).sum(1)
@@ -43,10 +47,15 @@ def test_get_L(n, p, method, expected):
 
 
 p = Specifications()
+rho_vec = np.zeros((1, 40))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 160,
     "S": 40,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((40, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((40, 2)) / (40 * 2)),
@@ -120,10 +129,15 @@ def test_get_I(b_splus1, K_p1, K, p, method, expected):
 
 
 p = Specifications()
+rho_vec = np.zeros((1, 40))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 160,
     "S": 40,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((40, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((40, 2)) / (40 * 2)),
@@ -173,10 +187,15 @@ def test_get_B(b, p, method, PreTP, expected):
 
 
 p = Specifications()
+rho_vec = np.zeros((1, 40))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 160,
     "S": 40,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((40, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((40, 2)) / (40 * 2)),
@@ -184,7 +203,7 @@ new_param_values = {
     "omega": np.ones((160, 40)) / 40,
     "omega_SS": np.ones(40) / 40,
     "imm_rates": np.zeros((160, 40)),
-    "rho": np.zeros(40),
+    "rho": rho_vec.tolist(),
 }
 # update parameters instance with new values for test
 p.update_specifications(new_param_values)
@@ -194,7 +213,7 @@ r = 0.5 + 0.5 * np.random.rand(p.T)
 b_splus1 = 0.06 + 7 * np.random.rand(p.T, p.S, p.J)
 pop = np.append(p.omega_S_preTP.reshape(1, p.S), p.omega[: p.T - 1, :], axis=0)
 BQ_presum = (b_splus1 * np.squeeze(p.lambdas)) * np.tile(
-    np.reshape(p.rho * pop, (p.T, p.S, 1)), (1, 1, p.J)
+    np.reshape(p.rho[0, :] * pop, (p.T, p.S, 1)), (1, 1, p.J)
 )
 growth_adj = (1.0 + r) / (1.0 + p.g_n[: p.T])
 
@@ -251,10 +270,15 @@ def test_get_BQ(r, b_splus1, j, p, method, PreTP, expected):
 
 
 p = Specifications()
+rho_vec = np.zeros((1, 40))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 160,
     "S": 40,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((40, 2)),
     "M": 3,
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
@@ -297,10 +321,15 @@ CI test of revenue() function
 """
 p = Specifications()
 num_tax_params = 12
+rho_vec = np.zeros((1, 20))
+rho_vec[0, -1] = 1.0
 new_param_values = {
     "T": 30,
     "S": 20,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((20, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((20, 2)) / (20 * 2)),
@@ -340,6 +369,7 @@ ubi = np.zeros((p.T, p.S, p.J))
 factor = 140000.0
 # update parameters instance with new values for test
 p.e = 0.263 + (2.024 - 0.263) * random_state.rand(p.S * p.J).reshape(p.S, p.J)
+p.e = np.tile(p.e.reshape(1, p.S, p.J), (p.T, 1, 1))
 p.omega = 0.039 * random_state.rand(p.T * p.S * 1).reshape(p.T, p.S)
 p.omega = p.omega / p.omega.sum(axis=1).reshape(p.T, 1)
 p.omega_SS = p.omega[-1, :]
@@ -349,10 +379,15 @@ etr_params = 0.22 * random_state.rand(
 theta = 0.101 + (0.156 - 0.101) * random_state.rand(p.J)
 
 p3 = Specifications()
+rho_vec = np.zeros((1, 20))
+rho_vec[0, -1] = 1.0
 new_param_values3 = {
     "T": 30,
     "S": 20,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((20, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((20, 2)) / (20 * 2)),
@@ -380,10 +415,15 @@ Inv3 = p3.delta * K
 inv_tax_cred_rev3 = np.squeeze(p3.inv_tax_credit[: p3.T] * Inv3)
 
 p_u = Specifications()
+rho_vec = np.zeros((1, 20))
+rho_vec[0, -1] = 1.0
 new_param_values_ubi = {
     "T": 30,
     "S": 20,
+    "rho": rho_vec.tolist(),
     "J": 2,
+    "chi_n": np.ones(2),
+    "e": np.ones((20, 2)),
     "labor_income_tax_noncompliance_rate": [[0.0]],
     "capital_income_tax_noncompliance_rate": [[0.0]],
     "eta": (np.ones((20, 2)) / (20 * 2)),
@@ -429,9 +469,10 @@ K_u = 0.957 + (1.163 - 0.957) * random_state.rand(p_u.T).reshape(p_u.T, 1)
 factor_u = 140000.0
 ubi_u = p_u.ubi_nom_array / factor_u
 # update parameters instance with new values for test
-p_u.e = 0.263 + (2.024 - 0.263) * random_state.rand(p_u.S * p_u.J).reshape(
-    p_u.S, p_u.J
+p_u.e = 0.263 + (2.024 - 0.263) * random_state.rand(p.S * p.J).reshape(
+    p.S, p.J
 )
+p_u.e = np.tile(p_u.e.reshape(1, p_u.S, p_u.J), (p_u.T, 1, 1))
 p_u.omega = 0.039 * random_state.rand(p_u.T * p_u.S * 1).reshape(p_u.T, p_u.S)
 p_u.omega = p_u.omega / p_u.omega.sum(axis=1).reshape(p_u.T, 1)
 p_u.omega_SS = p_u.omega[-1, :]
@@ -565,6 +606,7 @@ test_data = [
         ubi[0, :, :],
         theta,
         etr_params[-1, :, :, :],
+        p.e[-1, :, :],
         p,
         None,
         "SS",
@@ -585,6 +627,7 @@ test_data = [
         ubi,
         theta,
         etr_params,
+        p.e,
         p,
         None,
         "TPI",
@@ -605,6 +648,7 @@ test_data = [
         ubi,
         theta,
         etr_params,
+        p.e,
         p3,
         None,
         "TPI",
@@ -625,6 +669,7 @@ test_data = [
         ubi_u[0, :, :],
         theta_u,
         etr_params_u[-1, :, :, :],
+        p.e[0, :, :],
         p_u,
         None,
         "SS",
@@ -645,6 +690,7 @@ test_data = [
         ubi_u,
         theta_u,
         etr_params_u,
+        p.e,
         p_u,
         None,
         "TPI",
@@ -654,7 +700,7 @@ test_data = [
 
 
 @pytest.mark.parametrize(
-    "r,w,b,n,bq,c,Y,L,K,p_m,factor,ubi,theta,etr_params,p,m,method,expected",
+    "r,w,b,n,bq,c,Y,L,K,p_m,factor,ubi,theta,etr_params,e,p,m,method,expected",
     test_data,
     ids=["SS", "TPI", "TPI, replace rate adjust", "SS UBI>0", "TPI UBI>0"],
 )
@@ -673,6 +719,7 @@ def test_revenue(
     ubi,
     theta,
     etr_params,
+    e,
     p,
     m,
     method,
@@ -696,6 +743,7 @@ def test_revenue(
         ubi,
         theta,
         etr_params,
+        e,
         p,
         m,
         method,

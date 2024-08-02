@@ -3,36 +3,42 @@ on:
   push:
     branches:
       - master
+    paths:
+      - './docs/**.png'
+      - './docs/book/content/theory/images/**.png'
+      - './docs/book/**.yml'
+      - './docs/book/**.bib'
+      - '**.md'
+      - './docs/book/content/api/**.rst'
+      - './ogcore/**.py'
 jobs:
   build-and-deploy:
     if: github.repository == 'PSLmodels/OG-Core'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2 # If you're using actions/checkout@v2 you must set persist-credentials to false in most cases for the deployment to work correctly.
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v3
         with:
+          miniforge-variant: Mambaforge
           activate-environment: ogcore-dev
           environment-file: environment.yml
-          python-version: 3.7
+          python-version: "3.11"
           auto-activate-base: false
 
       - name: Build # Build Jupyter Book
         shell: bash -l {0}
         run: |
           pip install -e .
-          pip install jupyter-book>=0.11.3
-          pip install sphinxcontrib-bibtex>=2.0.0
           python -m ipykernel install --user --name=ogcore-dev
-          cd docs
-          jb build ./book
+          jb build ./docs/book
 
       - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@releases/v3
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: gh-pages # The branch the action should deploy to.

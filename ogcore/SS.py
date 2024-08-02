@@ -4,7 +4,7 @@ import numpy as np
 import scipy.optimize as opt
 from dask import delayed, compute
 import dask.multiprocessing
-from ogcore import tax, household, firm, utils, fiscal
+from ogcore import tax, pensions, household, firm, utils, fiscal
 from ogcore import aggregates as aggr
 from ogcore.constants import SHOW_RUNTIME
 import os
@@ -28,6 +28,13 @@ ENFORCE_SOLUTION_CHECKS = True
 Set flag for verbosity
 """
 VERBOSE = True
+
+"""
+A global future for the Parameters object for client workers.
+This is scattered once and place at module scope, then used
+by the client in the inner loop.
+"""
+scattered_p = None
 
 """
 ------------------------------------------------------------------------
@@ -64,7 +71,7 @@ def euler_equation_solver(guesses, *args):
     b_s = np.array([0] + list(b_guess[:-1]))
     b_splus1 = b_guess
 
-    theta = tax.replacement_rate_vals(n_guess, w, factor, j, p)
+    theta = pensions.replacement_rate_vals(n_guess, w, factor, j, p)
 
     error1 = household.FOC_savings(
         r,
@@ -78,8 +85,7 @@ def euler_equation_solver(guesses, *args):
         tr,
         ubi,
         theta,
-        p.e[:, j],
-        p.rho,
+        p.rho[-1, :],
         p.etr_params[-1],
         p.mtry_params[-1],
         None,
@@ -99,8 +105,7 @@ def euler_equation_solver(guesses, *args):
         tr,
         ubi,
         theta,
-        p.chi_n,
-        p.e[:, j],
+        p.chi_n[-1, :],
         p.etr_params[-1],
         p.mtrx_params[-1],
         None,
@@ -138,7 +143,7 @@ def euler_equation_solver(guesses, *args):
         j,
         False,
         "SS",
-        p.e[:, j],
+        p.e[-1, :, j],
         p.etr_params[-1],
         p,
     )
@@ -151,7 +156,7 @@ def euler_equation_solver(guesses, *args):
         n_guess,
         bq,
         taxes,
-        p.e[:, j],
+        p.e[-1, :, j],
         p,
     )
     mask6 = cons < 0
@@ -209,6 +214,12 @@ def inner_loop(outer_loop_vars, p, client):
                 units
 
     """
+    # Retrieve the "scattered" Parameters object.
+    global scattered_p
+
+    if scattered_p is None:
+        scattered_p = client.scatter(p, broadcast=True) if client else p
+
     # unpack variables to pass to function
     bssmat, nssmat, r_p, r, w, p_m, Y, BQ, TR, factor = outer_loop_vars
 
@@ -224,10 +235,6 @@ def inner_loop(outer_loop_vars, p, client):
     ubi = p.ubi_nom_array[-1, :, :] / factor
 
     lazy_values = []
-    if client:
-        scattered_p = client.scatter(p, broadcast=True)
-    else:
-        scattered_p = p
     for j in range(p.J):
         guesses = np.append(bssmat[:, j], nssmat[:, j])
         euler_params = (
@@ -257,7 +264,7 @@ def inner_loop(outer_loop_vars, p, client):
         results = results = compute(
             *lazy_values,
             scheduler=dask.multiprocessing.get,
-            num_workers=p.num_workers
+            num_workers=p.num_workers,
         )
 
     for j, result in enumerate(results):
@@ -268,7 +275,7 @@ def inner_loop(outer_loop_vars, p, client):
     b_splus1 = bssmat
     b_s = np.array(list(np.zeros(p.J).reshape(1, p.J)) + list(bssmat[:-1, :]))
 
-    theta = tax.replacement_rate_vals(nssmat, w, factor, None, p)
+    theta = pensions.replacement_rate_vals(nssmat, w, factor, None, p)
 
     num_params = len(p.etr_params[-1][0])
     etr_params_3D = [
@@ -293,7 +300,7 @@ def inner_loop(outer_loop_vars, p, client):
         None,
         False,
         "SS",
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         p,
     )
@@ -306,7 +313,7 @@ def inner_loop(outer_loop_vars, p, client):
         nssmat,
         bq,
         net_tax,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         p,
     )
     c_i = household.get_ci(c_s, p_i, p_tilde, p.tau_c[-1, :], p.alpha_c)
@@ -383,7 +390,7 @@ def inner_loop(outer_loop_vars, p, client):
         new_r, new_r_gov, p_m, K_vec, K_g, D, MPKg_vec, p, "SS"
     )
     average_income_model = (
-        (new_r_p * b_s + new_w * p.e * nssmat)
+        (new_r_p * b_s + new_w * np.squeeze(p.e[-1, :, :]) * nssmat)
         * p.omega_SS.reshape(p.S, 1)
         * p.lambdas.reshape(1, p.J)
     ).sum()
@@ -394,7 +401,7 @@ def inner_loop(outer_loop_vars, p, client):
     new_BQ = aggr.get_BQ(new_r_p, bssmat, None, p, "SS", False)
     new_bq = household.get_bq(new_BQ, None, p, "SS")
     tr = household.get_tr(TR, None, p, "SS")
-    theta = tax.replacement_rate_vals(nssmat, new_w, new_factor, None, p)
+    theta = pensions.replacement_rate_vals(nssmat, new_w, new_factor, None, p)
 
     # Find updated goods prices
     new_p_m = firm.get_pm(new_w, Y_vec, L_vec, p, "SS")
@@ -425,7 +432,7 @@ def inner_loop(outer_loop_vars, p, client):
         None,
         False,
         "SS",
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         p,
     )
@@ -438,7 +445,7 @@ def inner_loop(outer_loop_vars, p, client):
         nssmat,
         new_bq,
         taxss,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         p,
     )
     (
@@ -467,6 +474,7 @@ def inner_loop(outer_loop_vars, p, client):
         ubi,
         theta,
         etr_params_3D,
+        np.squeeze(p.e[-1, :, :]),
         p,
         None,
         "SS",
@@ -716,7 +724,7 @@ def SS_solver(
     bqssmat = household.get_bq(BQss, None, p, "SS")
     trssmat = household.get_tr(TR_ss, None, p, "SS")
     ubissmat = p.ubi_nom_array[-1, :, :] / factor_ss
-    theta = tax.replacement_rate_vals(nssmat, wss, factor_ss, None, p)
+    theta = pensions.replacement_rate_vals(nssmat, wss, factor_ss, None, p)
 
     # Compute effective and marginal tax rates for all agents
     num_params = len(p.etr_params[-1][0])
@@ -757,7 +765,7 @@ def SS_solver(
         nssmat,
         factor,
         True,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         mtry_params_3D,
         capital_noncompliance_rate_2D,
@@ -770,7 +778,7 @@ def SS_solver(
         nssmat,
         factor,
         False,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         mtrx_params_3D,
         labor_noncompliance_rate_2D,
@@ -782,7 +790,7 @@ def SS_solver(
         bssmat_s,
         nssmat,
         factor,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         labor_noncompliance_rate_2D,
         capital_noncompliance_rate_2D,
@@ -803,7 +811,7 @@ def SS_solver(
         None,
         False,
         "SS",
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         etr_params_3D,
         p,
     )
@@ -816,10 +824,12 @@ def SS_solver(
         nssmat,
         bqssmat,
         taxss,
-        p.e,
+        np.squeeze(p.e[-1, :, :]),
         p,
     )
-    yss_before_tax_mat = household.get_y(r_p_ss, wss, bssmat_s, nssmat, p)
+    yss_before_tax_mat = household.get_y(
+        r_p_ss, wss, bssmat_s, nssmat, p, "SS"
+    )
     Css = aggr.get_C(cssmat, p, "SS")
     c_i_ss_mat = household.get_ci(
         cssmat, p_i_ss, p_tilde_ss, p.tau_c[-1, :], p.alpha_c
@@ -860,6 +870,7 @@ def SS_solver(
         ubissmat,
         theta,
         etr_params_3D,
+        np.squeeze(p.e[-1, :, :]),
         p,
         None,
         "SS",
@@ -916,7 +927,7 @@ def SS_solver(
             + " budget"
         )
 
-    if ENFORCE_SOLUTION_CHECKS and (max(np.absolute(RC)) > p.mindist_SS):
+    if ENFORCE_SOLUTION_CHECKS and (max(np.absolute(RC)) > p.RC_SS):
         print("Resource Constraint Difference:", RC)
         err = "Steady state aggregate resource constraint not satisfied"
         raise RuntimeError(err)
@@ -1123,6 +1134,12 @@ def run_SS(p, client=None):
             results
 
     """
+    global scattered_p
+    if client:
+        scattered_p = client.scatter(p, broadcast=True)
+    else:
+        scattered_p = p
+
     # Create list of deviation factors for initial guesses of r and TR
     dev_factor_list = [
         [1.00, 1.0],
@@ -1386,7 +1403,11 @@ def run_SS(p, client=None):
             Yss = TR_ss / p.alpha_T[-1]  # may not be right - if
             # budget_balance = True, but that's ok - will be fixed in
             # SS_solver
-        if ENFORCE_SOLUTION_CHECKS and not sol.success == 1:
+        if (
+            (ENFORCE_SOLUTION_CHECKS)
+            and not (sol.success == 1)
+            and (np.absolute(np.array(sol.fun)).max() > p.mindist_SS)
+        ):
             raise RuntimeError("Steady state equilibrium not found")
         # Return SS values of variables
         fsolve_flag = True
