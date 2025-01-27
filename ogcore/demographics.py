@@ -1,19 +1,17 @@
 """
-------------------------------------------------------------------------
-Functions for generating demographic objects necessary for the OG-USA
-model
-------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+Functions for generating demographic objects necessary for the OG-USA model. A
+list of UN official 3-digit country codes and corresponding 3-character country
+abbreviations is available at https://unstats.un.org/unsd/methodology/m49/
+-------------------------------------------------------------------------------
 """
 
 # Import packages
 import os
-import time
 import numpy as np
-import json
 from io import StringIO
 import scipy.optimize as opt
 import pandas as pd
-import matplotlib.pyplot as plt
 from ogcore.utils import get_legacy_session
 from ogcore import parameter_plots as pp
 
@@ -115,6 +113,11 @@ def get_un_data(
             "458": "MYS",
             "356": "IND",
             "826": "UK",
+            "360": "IDN",
+            "608": "PHL",
+            "764": "THA",
+            "076": "BRA",
+            "410": "KOR",
         }
         un_variable_dict = {
             "68": "fertility_rates",
@@ -207,11 +210,15 @@ def get_fert(
 
     # Create plots if needed
     if graph:
+        if start_year == end_year:
+            years_to_plot = [start_year]
+        else:
+            years_to_plot = [start_year, end_year]
         if plot_path is not None:
             pp.plot_fert_rates(
                 [fert_rates_2D],
                 start_year=start_year,
-                years_to_plot=[start_year, end_year],
+                years_to_plot=years_to_plot,
                 path=plot_path,
             )
             return fert_rates_2D
@@ -219,7 +226,7 @@ def get_fert(
             fig = pp.plot_fert_rates(
                 [fert_rates_2D],
                 start_year=start_year,
-                years_to_plot=[start_year, end_year],
+                years_to_plot=years_to_plot,
             )
             return fert_rates_2D, fig
     else:
@@ -297,11 +304,15 @@ def get_mort(
 
     # Create plots if needed
     if graph:
+        if start_year == end_year:
+            years_to_plot = [start_year]
+        else:
+            years_to_plot = [start_year, end_year]
         if plot_path is not None:
             pp.plot_mort_rates_data(
                 mort_rates_2D,
                 start_year,
-                [start_year, end_year],
+                years_to_plot,
                 path=plot_path,
             )
             return mort_rates_2D, infmort_rate_vec
@@ -309,7 +320,7 @@ def get_mort(
             fig = pp.plot_mort_rates_data(
                 mort_rates_2D,
                 start_year,
-                [start_year, end_year],
+                years_to_plot,
             )
             return mort_rates_2D, infmort_rate_vec, fig
     else:
@@ -400,8 +411,8 @@ def get_pop(
                 end_year=start_year,
             )
             initial_pop_sample = initial_pop_data[
-                (pre_pop_data["age"] >= min_age)
-                & (pre_pop_data["age"] <= max_age)
+                (initial_pop_data["age"] >= min_age)
+                & (initial_pop_data["age"] <= max_age)
             ]
             initial_pop = initial_pop_sample.value.values
             initial_pop = pop_rebin(initial_pop, E + S)
@@ -632,11 +643,15 @@ def get_imm_rates(
 
     # Create plots if needed
     if graph:
+        if start_year == end_year:
+            years_to_plot = [start_year]
+        else:
+            years_to_plot = [start_year, end_year]
         if plot_path is not None:
             pp.plot_imm_rates(
                 imm_rates_2D,
                 start_year,
-                [start_year, end_year],
+                years_to_plot,
                 path=plot_path,
             )
             return imm_rates_2D
@@ -644,7 +659,7 @@ def get_imm_rates(
             fig = pp.plot_imm_rates(
                 imm_rates_2D,
                 start_year,
-                [start_year, end_year],
+                years_to_plot,
             )
             return imm_rates_2D, fig
     else:
