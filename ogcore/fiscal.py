@@ -105,7 +105,10 @@ def D_G_path(r_gov, dg_fixed_values, p):
             if (t >= p.tG1) and (t < p.tG2):
                 G[t] = (
                     growth[t + 1]
-                    * (p.rho_G * p.debt_ratio_ss * Y[t] + (1 - p.rho_G) * (D[t]/1.02))
+                    * (
+                        p.rho_G * p.debt_ratio_ss * Y[t]
+                        + (1 - p.rho_G) * (D[t] / 1.02)
+                    )
                     - (1 + r_gov[t]) * D[t]
                     + total_tax_revenue[t]
                     - agg_pension_outlays[t]
