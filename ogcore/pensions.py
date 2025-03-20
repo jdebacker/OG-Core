@@ -220,15 +220,17 @@ def DB_amount(w, e, n, j, p):
         # TODO: think about how to handle setting w_preTP and n_preTP
         # TODO: will need to update how the e matrix is handled here
         # and else where to allow for it to be time varying
-        w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)
-        n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        # w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)
+        # n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        w_S = np.append((w * np.ones(p.S))[:(-per_rmn)], w)
+        n_S = np.append(n[:(-per_rmn)], n)
 
         DB = np.zeros(p.S)
         DB = DB_1dim_loop(
             w_S,
-            p.e[:, j],
+            p.e[-1, :, j], #TODO, index by t for TP
             n_S,
-            p.retire,
+            p.retire[-1],  # TODO: need a t index if changing over TP
             p.S,
             p.g_y,
             L_inc_avg_s,
@@ -247,7 +249,7 @@ def DB_amount(w, e, n, j, p):
                 w,
                 e,
                 n,
-                p.retire,
+                p.retire[-1],  # TODO: need a t index if changing over TP
                 p.S,
                 p.g_y,
                 L_inc_avg_s,
@@ -265,7 +267,7 @@ def DB_amount(w, e, n, j, p):
                 w,
                 e,
                 n,
-                p.retire,
+                p.retire[-1],
                 p.S,
                 p.g_y,
                 L_inc_avg_sj,
@@ -306,14 +308,16 @@ def NDC_amount(w, e, n, r, Y, j, p):
     if n.shape[0] < p.S:
         per_rmn = n.shape[0]
 
-        w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)
-        n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        # w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)
+        # n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        w_S = np.append((w * np.ones(p.S))[:(-per_rmn)], w)
+        n_S = np.append(n[:(-per_rmn)], n)
 
         NDC_s = np.zeros(p.retire)
         NDC = np.zeros(p.S)
         NDC = NDC_1dim_loop(
             w_S,
-            p.e[:, j],
+            p.e[-1, :, j],  #TODO: index by t for TP
             n_S,
             p.retire,
             p.S,
@@ -385,13 +389,15 @@ def PS_amount(w, e, n, j, factor, p):
 
     if n.shape[0] < p.S:
         per_rmn = n.shape[0]
-        w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)
-        n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        # w_S = np.append((p.w_preTP * np.ones(p.S))[:(-per_rmn)], w)  #TODO: find solution for the preTP stuff
+        # n_S = np.append(p.n_preTP[:(-per_rmn), j], n)
+        w_S = np.append((w * np.ones(p.S))[:(-per_rmn)], w)
+        n_S = np.append(n[:(-per_rmn)], n)
         L_inc_avg_s = np.zeros(p.retire)
         PS = np.zeros(p.S)
         PS = PS_1dim_loop(
             w_S,
-            p.e[:, j],
+            p.e[-1, :, j], #TODO: index by t for TP
             n_S,
             p.retire,
             p.S,
@@ -734,8 +740,6 @@ def deriv_DB_loop(
             another unit of labor supply
     """
     d_theta = np.zeros(per_rmn)
-    print("Year contribution: ", yr_contr)
-    print("Average earnings years: ", avg_earn_num_years)
     num_per_retire = S - S_ret
     for s in range(per_rmn):
         d_theta[s] = w[s] * e[s] * alpha_db * (yr_contr / avg_earn_num_years)
@@ -912,7 +916,7 @@ def PS_2dim_loop(w, e, n, S_ret, S, J, g_y, vpoint, factor, L_inc_avg_sj, PS):
     return PS
 
 
-@numba.jit(nopython=True)
+# @numba.jit(nopython=True)
 def DB_1dim_loop(
     w,
     e,
@@ -952,8 +956,10 @@ def DB_1dim_loop(
             # TODO: pass t so that can pull correct g_y value
             # Just need to make if doing over time path makes sense
             # or if should just do SS
+            # print("SHAPES = ", e.shape, n.shape, w.shape)
             L_inc_avg_s[s - (S_ret - avg_earn_num_years)] = (
-                w[s] / np.exp(g_y[-1] * (u - s)) * e[s] * n[s]
+                # w[s] / np.exp(g_y[-1] * (u - s)) * e[s] * n[s]
+                w / np.exp(g_y * (u - s)) * e[s] * n[s]  # TODO: why wages indexed by s, why g_y[-1]?, it's a scalar, also need to index e by t
             )
         L_inc_avg = L_inc_avg_s.sum() / avg_earn_num_years
         rep_rate = yr_contr * alpha_db
@@ -1001,7 +1007,8 @@ def DB_2dim_loop(
     for u in range(S_ret, S):
         for s in range(S_ret - avg_earn_num_years, S_ret):
             L_inc_avg_sj[s - (S_ret - avg_earn_num_years), :] = (
-                w[s] / np.exp(g_y * (u - s)) * e[s, :] * n[s, :]
+                # w[s] / np.exp(g_y * (u - s)) * e[s, :] * n[s, :]
+                w / np.exp(g_y * (u - s)) * e[s, :] * n[s, :]  #TODO why wages indexed by s?
             )
         L_inc_avg = L_inc_avg_sj.sum(axis=0) / avg_earn_num_years
         rep_rate = yr_contr * alpha_db
