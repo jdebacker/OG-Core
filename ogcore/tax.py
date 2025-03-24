@@ -392,6 +392,34 @@ def income_tax_liab(r, w, b, n, factor, t, j, method, e, etr_params, p):
     return income_payroll_tax_liab
 
 
+def cons_tax_liab(p_i, c, method, p):
+    """
+    Calculate consumption tax liability for each household.
+
+    Args:
+        p_i (Numpy array): income for each household
+        c (Numpy array): consumption for each household
+        method (str): adjusts calculation dimensions based on 'SS' or
+            'TPI'
+        p (OG-Core Specifications object): model parameters
+
+    Returns:
+        cons_tax (Numpy array): consumption tax liability for each
+            household
+    """
+    if method == "SS":
+        cons_tax = (
+            ((p.tau_c[-1, :] * p_i).reshape(p.I, 1, 1) * c).sum(axis=0)
+        )
+    else:
+        cons_tax = (
+                ((p.tau_c[: p.T, :] * p_i).reshape(p.T, p.I, 1, 1) * c).sum(
+                    axis=1)
+        )
+
+    return cons_tax
+
+
 def wealth_tax_liab(r, b, t, j, method, p):
     """
     Calculate wealth tax liability for each household.
