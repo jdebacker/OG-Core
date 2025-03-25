@@ -1742,3 +1742,33 @@ def test_net_taxes(
     )
 
     assert np.allclose(net_taxes, expected)
+
+
+def test_income_tax_liab():
+
+    test_inc_liab = tax.income_tax_liab(r, w, b, n, factor, t, j, method, e, etr_params, p)
+
+    assert np.allclose(test_inc_liab, expected)
+
+
+def test_cons_tax_liab():
+    p = Specifications()
+    p_i =
+    c = [[]]
+    test_cons_liab = tax.cons_tax_liab(p_i, c, method, p)
+
+    assert np.allclose(test_cons_liab, expected)
+
+
+def test_wealth_tax_liab():
+
+    test_wealth_liab = tax.wealth_tax_liab(r, b, t, j, method, p)
+
+    assert np.allclose(test_wealth_liab, expected)
+
+
+def test_bequest_tax_liab():
+
+    test_bequest_liab = tax.bequest_tax_liab(r, b, bq, t, j, method, p)
+
+    assert np.allclose(test_bequest_liab, expected)

@@ -422,7 +422,7 @@ def cons_tax_liab(p_i, c, method, p):
 
 def wealth_tax_liab(r, b, t, j, method, p):
     """
-    Calculate wealth tax liability for each household.
+    Calculate liability due from taxes on wealth for each household.
 
     Args:
         r (array_like): real interest rate
