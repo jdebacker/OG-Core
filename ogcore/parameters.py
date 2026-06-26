@@ -278,11 +278,27 @@ class Specifications(paramtools.Parameters):
         eta_params_to_TP = [
             "eta",
             "eta_RM",
+            "omega",
+            "rho",
+            "imm_rates"
         ]
         for item in eta_params_to_TP:
             param_in = getattr(self, item)
             param_out = extrapolate_array(
                 param_in, dims=(self.T + self.S, self.S, self.J), item=item
+            )
+            setattr(self, item, param_out)
+        # extrapolate SS demog objects
+        demog_obj_to_SS = [
+            "omega_SS",
+            "omega_S_preTP",
+            "imm_rates_preTP",
+            "rho_preTP"
+        ]
+        for item in demog_obj_to_SS:
+            param_in = getattr(self, item)
+            param_out = extrapolate_array(
+                param_in, dims=(self.S, self.J), item=item
             )
             setattr(self, item, param_out)
         # extrapolate lifetime ability e matrix over time dimension
