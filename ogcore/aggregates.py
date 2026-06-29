@@ -382,7 +382,7 @@ def revenue(
     w_tax_liab = tax.wealth_tax_liab(r, b, 0, None, method, p)
     if method == "SS":
         p_i = np.dot(p.io_matrix, p_m)
-        pop_weights = p.omega_SS)
+        pop_weights = p.omega_SS
         iit_payroll_tax_revenue = (inc_pay_tax_liab * pop_weights).sum()
         agg_pension_outlays = (pension_benefits * pop_weights).sum()
         UBI_outlays = (ubi * pop_weights).sum()
