@@ -684,6 +684,11 @@ def get_pop_objs(
     imm_rates=None,
     infer_pop=False,
     pop_dist=None,
+    fert_gradient=None,
+    mort_gradient=None,
+    infmort_gradient=None,
+    imm_gradient=None,
+    income_percentiles=None,
     country_id=UN_COUNTRY_CODE,
     initial_data_year=START_YEAR - 1,
     final_data_year=START_YEAR + 2,
@@ -714,6 +719,20 @@ def get_pop_objs(
         infer_pop (bool): =True if want to infer the population
         pop_dist (array_like): user provided population distribution,
             dimensions are T0+1 x E+S
+        fert_gradient (array_like): user provided fertility rate gradient,
+            dimensions are S, represents the pp change in the fertility rate
+            per percentile of the lifetime income distribution.
+        mort_gradient (array_like): user provided mortality rate gradient,
+            dimensions are S, represents the pp change in the mortality rate
+            per percentile of the lifetime income distribution.
+        infmort_gradient (array_like): user provided infant mortality rate gradient,
+            dimensions are S, represents the pp change in the infant mortality rate
+            per percentile of the lifetime income distribution.
+        imm_gradient (array_like): user provided immigration rate gradient,
+            dimensions are S, represents the pp change in the immigration rate
+            per percentile of the lifetime income distribution.
+        income_percentiles (array_like): user provided income percentiles,
+            dimensions are J, the number of lifetime income groups
         country_id (str): country id for UN data
         initial_data_year (int): initial year of data to use
             (not relevant if have user provided data)
@@ -755,6 +774,8 @@ def get_pop_objs(
         ", Final Data year = ",
         final_data_year,
     )
+    if income_percentiles is not None:
+        J = len(income_percentiles)
     assert E + S <= max_age - min_age + 1
     assert initial_data_year >= 2012 and initial_data_year <= 2100 - 1
     assert final_data_year >= 2012 and final_data_year <= 2100 - 1
