@@ -720,17 +720,17 @@ def get_pop_objs(
         pop_dist (array_like): user provided population distribution,
             dimensions are T0+1 x E+S
         fert_gradient (array_like): user provided fertility rate gradient,
-            dimensions are S, represents the pp change in the fertility rate
+            dimensions are S, represents the log-odds slope in the fertility rate
             per percentile of the lifetime income distribution.
         mort_gradient (array_like): user provided mortality rate gradient,
-            dimensions are S, represents the pp change in the mortality rate
+            dimensions are S, represents the log-odds slope in the mortality rate
             per percentile of the lifetime income distribution.
         infmort_gradient (array_like): user provided infant mortality rate gradient,
-            dimensions are S, represents the pp change in the infant mortality rate
+            dimensions are S, represents the log-odds slope in the infant mortality rate
             per percentile of the lifetime income distribution.
-        imm_gradient (array_like): user provided immigration rate gradient,
-            dimensions are S, represents the pp change in the immigration rate
-            per percentile of the lifetime income distribution.
+        imm_pctiles (array_like): user provided lifetime income distribution
+            for new immigrants, shape is num_per x S x J, where num_per
+            is the number of years between initial and final_data_year
         income_percentiles (array_like): user provided income percentiles,
             dimensions are J, the number of lifetime income groups
         country_id (str): country id for UN data
