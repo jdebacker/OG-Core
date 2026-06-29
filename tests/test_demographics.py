@@ -42,6 +42,7 @@ def test_get_pop_objs_read_UN_data():
         T,
         0,
         99,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         initial_data_year=start_year - 1,
         final_data_year=start_year,
         GraphDiag=False,
@@ -71,13 +72,17 @@ def test_get_pop_objs():
         infmort_rates=infmort_rates,
         imm_rates=imm_rates,
         infer_pop=True,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         pop_dist=pop_dist[0, :].reshape(1, E + S),
         initial_data_year=start_year - 1,
         final_data_year=start_year,
         GraphDiag=False,
     )
-
-    assert np.allclose(pop_dict["omega_SS"], pop_dict["omega"][-1, :])
+    print("Omega_SS shape:", pop_dict["omega_SS"].shape)
+    print("Omega last period shape:", pop_dict["omega"][-1, :, :].shape)
+    print("Some values from Omega_SS:", pop_dict["omega_SS"][:5, :5])
+    print("Some values from Omega last period:", pop_dict["omega"][-1, :5, :5])
+    assert np.allclose(pop_dict["omega_SS"], pop_dict["omega"][-1, :, :])
 
 
 def test_pop_smooth():
@@ -100,6 +105,7 @@ def test_pop_smooth():
         infmort_rates=infmort_rates,
         imm_rates=imm_rates,
         infer_pop=True,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         pop_dist=pop_dist[0, :].reshape(1, E + S),
         initial_data_year=start_year - 1,
         final_data_year=start_year,
@@ -147,6 +153,7 @@ def test_pop_growth_smooth():
         infmort_rates=infmort_rates,
         imm_rates=imm_rates,
         infer_pop=True,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         pop_dist=pop_dist[0, :].reshape(1, E + S),
         initial_data_year=start_year - 1,
         final_data_year=start_year,
@@ -187,6 +194,7 @@ def test_imm_smooth():
         99,
         initial_data_year=start_year - 1,
         final_data_year=start_year,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         GraphDiag=False,
     )
     # assert diffs are small
@@ -338,13 +346,14 @@ def test_custom_series():
         T,
         0,
         99,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         initial_data_year=start_year,
         final_data_year=start_year + 1,
         GraphDiag=False,
         imm_rates=imm_rates,
         infer_pop=True,
     )
-    assert np.allclose(pop_dict["imm_rates"][0, :], imm_rates[0, E:])
+    assert np.allclose(pop_dict["imm_rates"][0, :, 0], imm_rates[0, E:])
 
 
 def test_custom_series_fail():
@@ -398,6 +407,7 @@ def test_custom_series_fail():
             mort_rates=mort_rates,
             infmort_rates=infmort_rates,
             imm_rates=imm_rates,
+            income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
             pop_dist=pop_dist,
             initial_data_year=start_year,
             final_data_year=start_year + 1,
@@ -428,6 +438,7 @@ def test_SS_dist():
         imm_rates=imm_rates,
         infer_pop=True,
         pop_dist=pop_dist[0, :].reshape(1, E + S),
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         initial_data_year=start_year - 1,
         final_data_year=start_year,
         GraphDiag=False,
@@ -459,6 +470,7 @@ def test_time_path_length():
         infmort_rates=infmort_rates,
         imm_rates=imm_rates,
         infer_pop=True,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         pop_dist=pop_dist[0, :].reshape(1, E + S),
         initial_data_year=start_year - 1,
         final_data_year=start_year,
@@ -521,6 +533,7 @@ def test_infer_pop_nones():
         mort_rates=mort_rates,
         infmort_rates=infmort_rates,
         imm_rates=imm_rates,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         infer_pop=True,
         pop_dist=None,
         initial_data_year=start_year,
@@ -548,12 +561,13 @@ def test_data_download(tmpdir):
         T,
         0,
         99,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         initial_data_year=start_year,
         final_data_year=start_year + 1,
         download_path=tmpdir,
     )
 
-    # No read in each file and call get_pop_objs again with the data
+    # Now read in each file and call get_pop_objs again with the data
     fert_rates = np.loadtxt(
         os.path.join(tmpdir, "fert_rates.csv"), delimiter=","
     )
@@ -580,6 +594,7 @@ def test_data_download(tmpdir):
         infmort_rates=infmort_rates[:],
         imm_rates=imm_rates[:, :],
         infer_pop=True,
+        income_percentiles=[0.25, 0.25, 0.2, 0.2, 0.05, 0.04, 0.01],
         pop_dist=pop_dist[0, :].reshape(1, E + S),
         initial_data_year=start_year,
         final_data_year=start_year + 2,

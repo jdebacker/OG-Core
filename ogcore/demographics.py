@@ -932,27 +932,13 @@ def expand_pop_obj_J(
         dict: demographic objects with the same keys needed by get_pop_objs.
     """
     omega_SS = omega_SSfx[-S:] / omega_SSfx[-S:].sum()
-    base_objs = {
-        "omega_path_S": omega_path_S,
-        "omega_SS": omega_SS,
-        "mort_rates_S": mort_rates_S,
-        "imm_rates_mat": imm_rates_mat,
-    }
-
     income_inputs = (
         fert_gradient,
         mort_gradient,
         infmort_gradient,
         imm_pctiles,
     )
-    if income_percentiles is None:
-        if any(x is not None for x in income_inputs):
-            raise ValueError(
-                "income_percentiles must be provided when using income-specific "
-                "fertility, mortality, infant mortality, or immigration inputs."
-            )
-        return base_objs
-
+    assert income_percentiles is not None, "income_percentiles must be provided when using income-specific inputs."
     income_shares, pct_midpoints = _income_shares_and_midpoints(
         income_percentiles
     )
@@ -961,13 +947,14 @@ def expand_pop_obj_J(
     assert totpers == E + S
 
     all_income_inputs_none = all(x is None for x in income_inputs)
+
     if all_income_inputs_none:
+        print("In the all are none case.")
         return {
-            "omega_path_S": omega_path_S[:, :, None]
-            * income_shares.reshape(1, 1, J),
-            "omega_SS": omega_SS[:, None] * income_shares.reshape(1, J),
-            "mort_rates_S": np.tile(mort_rates_S[:, :, None], (1, 1, J)),
-            "imm_rates_mat": np.tile(imm_rates_mat[:, :, None], (1, 1, J)),
+            "omega_path_S": omega_path_S.reshape(omega_path_S.shape[0], omega_path_S.shape[1], 1) * income_shares.reshape(1, 1, J),
+            "omega_SS": omega_SS.reshape(omega_SS.shape[0], 1) * income_shares.reshape(1, J),
+            "mort_rates_S": np.tile(mort_rates_S.reshape(mort_rates_S.shape[0], mort_rates_S.shape[1], 1), (1, 1, J)),
+            "imm_rates_mat": np.tile(imm_rates_mat.reshape(imm_rates_mat.shape[0], imm_rates_mat.shape[1], 1), (1, 1, J)),
         }
 
     fert_slopes = _format_age_gradient(
