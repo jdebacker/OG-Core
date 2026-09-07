@@ -33,16 +33,14 @@ def get_L(n, p, method):
 
     """
     if method == "SS":
-        L_presum = (
-            np.squeeze(p.e[-1, :, :])
-            * np.transpose(p.omega_SS * p.lambdas)
-            * n
-        )
+        # NOTE: avoid np.squeeze on p.e[-1, :, :] here — for J=1 it collapses
+        # the J axis to a 1-D array, and the subsequent multiplication against
+        # the (S, J) weight broadcasts into an (S, S) outer product, producing
+        # a labor aggregate S times too large. p.e[-1, :, :] is already (S, J).
+        L_presum = p.e[-1, :, :] * p.omega_SS * n
         L = L_presum.sum()
     elif method == "TPI":
-        L_presum = (n * (p.e * np.squeeze(p.lambdas))) * np.tile(
-            np.reshape(p.omega[: p.T, :], (p.T, p.S, 1)), (1, 1, p.J)
-        )
+        L_presum = n * (p.e * p.omega[: p.T, :, :])
         L = L_presum.sum(1).sum(1)
     return L
 
@@ -69,42 +67,35 @@ def get_I(b_splus1, K_p1, K, p, method):
 
     """
     if method == "SS":
-        omega_extended = np.append(p.omega_SS[1:], [0.0])
-        imm_extended = np.append(p.imm_rates[-1, 1:], [0.0])
-        part2 = (
-            (
-                b_splus1
-                * np.transpose((omega_extended * imm_extended) * p.lambdas)
-            ).sum()
-        ) / (1 + p.g_n_ss)
+        omega_extended = np.append(
+            p.omega_SS[1:, :], np.zeros((1, p.J)), axis=0
+        )
+        imm_extended = np.append(
+            p.imm_rates[-1, 1:, :], np.zeros((1, p.J)), axis=0
+        )
+        part2 = ((b_splus1 * omega_extended * imm_extended).sum()) / (
+            1 + p.g_n_ss
+        )
         aggI = (1 + p.g_n_ss) * np.exp(p.g_y) * (K_p1 - part2) - (
             1.0 - p.delta
         ) * K
     elif method == "TPI":
-        omega_shift = np.append(p.omega[: p.T, 1:], np.zeros((p.T, 1)), axis=1)
-        imm_shift = np.append(
-            p.imm_rates[: p.T, 1:], np.zeros((p.T, 1)), axis=1
+        omega_shift = np.append(
+            p.omega[: p.T, 1:, :], np.zeros((p.T, 1, p.J)), axis=1
         )
-        part2 = (
-            (
-                (b_splus1 * np.squeeze(p.lambdas))
-                * np.tile(
-                    np.reshape(imm_shift * omega_shift, (p.T, p.S, 1)),
-                    (1, 1, p.J),
-                )
-            )
-            .sum(1)
-            .sum(1)
-        ) / (1 + np.squeeze(np.hstack((p.g_n[1 : p.T], p.g_n_ss))))
+        imm_shift = np.append(
+            p.imm_rates[: p.T, 1:, :], np.zeros((p.T, 1, p.J)), axis=1
+        )
+        part2 = ((b_splus1 * imm_shift * omega_shift).sum(1).sum(1)) / (
+            1 + np.squeeze(np.hstack((p.g_n[: p.T - 1], p.g_n_ss)))
+        )
         aggI = (
-            1 + np.squeeze(np.hstack((p.g_n[1 : p.T], p.g_n_ss)))
+            1 + np.squeeze(np.hstack((p.g_n[: p.T - 1], p.g_n_ss)))
         ) * np.exp(p.g_y) * (K_p1 - part2) - (1.0 - p.delta) * K
     elif method == "total_ss":
         aggI = ((1 + p.g_n_ss) * np.exp(p.g_y) - 1 + p.delta) * K
     elif method == "total_tpi":
-        aggI = (1 + p.g_n[1 : p.T + 1]) * np.exp(p.g_y) * K_p1 - (
-            1.0 - p.delta
-        ) * K
+        aggI = (1 + p.g_n[: p.T]) * np.exp(p.g_y) * K_p1 - (1.0 - p.delta) * K
 
     return aggI
 
@@ -131,33 +122,39 @@ def get_B(b, p, method, preTP):
     """
     if method == "SS":
         if preTP:
-            part1 = b * np.transpose(p.omega_S_preTP * p.lambdas)
-            omega_extended = np.append(p.omega_S_preTP[1:], [0.0])
-            imm_extended = np.append(p.imm_rates[0, 1:], [0.0])
-            pop_growth_rate = p.g_n[0]
+            part1 = b * p.omega_S_preTP
+            omega_extended = np.append(
+                p.omega_S_preTP[1:, :], np.zeros((1, p.J)), axis=0
+            )
+            imm_extended = np.append(
+                p.imm_rates_preTP[1:, :], np.zeros((1, p.J)), axis=0
+            )
+            pop_growth_rate = p.g_n_preTP
         else:
-            part1 = b * np.transpose(p.omega_SS * p.lambdas)
-            omega_extended = np.append(p.omega_SS[1:], [0.0])
-            imm_extended = np.append(p.imm_rates[-1, 1:], [0.0])
+            part1 = b * p.omega_SS
+            omega_extended = np.append(
+                p.omega_SS[1:, :], np.zeros((1, p.J)), axis=0
+            )
+            imm_extended = np.append(
+                p.imm_rates[-1, 1:, :], np.zeros((1, p.J)), axis=0
+            )
             pop_growth_rate = p.g_n_ss
-        part2 = b * np.transpose(omega_extended * imm_extended * p.lambdas)
+        part2 = b * omega_extended * imm_extended
         B_presum = part1 + part2
         B = B_presum.sum()
         B /= 1.0 + pop_growth_rate
     elif method == "TPI":
-        part1 = (b * np.squeeze(p.lambdas)) * np.tile(
-            np.reshape(p.omega[: p.T, :], (p.T, p.S, 1)), (1, 1, p.J)
+        part1 = b * p.omega[: p.T, :, :]
+        omega_shift = np.append(
+            p.omega[: p.T, 1:, :], np.zeros((p.T, 1, p.J)), axis=1
         )
-        omega_shift = np.append(p.omega[: p.T, 1:], np.zeros((p.T, 1)), axis=1)
         imm_shift = np.append(
-            p.imm_rates[: p.T, 1:], np.zeros((p.T, 1)), axis=1
+            p.imm_rates[: p.T, 1:, :], np.zeros((p.T, 1, p.J)), axis=1
         )
-        part2 = (b * np.squeeze(p.lambdas)) * np.tile(
-            np.reshape(imm_shift * omega_shift, (p.T, p.S, 1)), (1, 1, p.J)
-        )
+        part2 = b * omega_shift * imm_shift
         B_presum = part1 + part2
         B = B_presum.sum(1).sum(1)
-        B /= 1.0 + np.hstack((p.g_n[1 : p.T], p.g_n_ss))
+        B /= 1.0 + np.hstack((p.g_n[: p.T - 1], p.g_n_ss))
     return B
 
 
@@ -189,37 +186,41 @@ def get_BQ(r, b_splus1, j, p, method, preTP):
     if method == "SS":
         if preTP:
             omega = p.omega_S_preTP
-            pop_growth_rate = p.g_n[0]
-            rho = p.rho[0, :]
+            pop_growth_rate = p.g_n_preTP
+            rho = p.rho_preTP
         else:
             omega = p.omega_SS
             pop_growth_rate = p.g_n_ss
             rho = p.rho[-1, :]
         if j is not None:
-            BQ_presum = omega * rho * b_splus1 * p.lambdas[j]
+            BQ_presum = omega[:, j] * rho[:, j] * b_splus1
         else:
-            BQ_presum = np.transpose(omega * (rho * p.lambdas)) * b_splus1
+            BQ_presum = omega * rho * b_splus1
         BQ = BQ_presum.sum(0)
         BQ *= (1.0 + r) / (1.0 + pop_growth_rate)
     elif method == "TPI":
         pop = np.append(
-            p.omega_S_preTP.reshape(1, p.S), p.omega[: p.T - 1, :], axis=0
+            p.omega_S_preTP.reshape(1, p.S, p.J),
+            p.omega[: p.T - 1, :, :],
+            axis=0,
         )
         rho = np.append(
-            p.rho[0, :].reshape(1, p.S), p.rho[: p.T - 1, :], axis=0
+            p.rho_preTP.reshape(1, p.S, p.J), p.rho[: p.T - 1, :, :], axis=0
         )
 
         if j is not None:
-            BQ_presum = (b_splus1 * p.lambdas[j]) * (pop * rho)
+            BQ_presum = b_splus1 * pop[:, :, j] * rho[:, :, j]
             BQ = BQ_presum.sum(1)
-            BQ *= (1.0 + r) / (1.0 + p.g_n[: p.T])
+            BQ *= (1.0 + r) / (1.0 + np.append(p.g_n_preTP, p.g_n[: p.T - 1]))
         else:
-            BQ_presum = (b_splus1 * np.squeeze(p.lambdas)) * np.tile(
-                np.reshape(pop * rho, (p.T, p.S, 1)), (1, 1, p.J)
-            )
+            BQ_presum = b_splus1 * pop * rho
             BQ = BQ_presum.sum(1)
             BQ *= np.tile(
-                np.reshape((1.0 + r) / (1.0 + p.g_n[: p.T]), (p.T, 1)),
+                np.reshape(
+                    (1.0 + r)
+                    / (1.0 + np.append(p.g_n_preTP, p.g_n[: p.T - 1])),
+                    (p.T, 1),
+                ),
                 (1, p.J),
             )
     if p.use_zeta:
@@ -261,15 +262,15 @@ def get_RM(Y, p, method):
         RM = np.zeros_like(Y)
         RM[0] = p.alpha_RM_1 * Y[0]
         for t in range(1, p.tG1):
-            RM[t] = ((1 + p.g_RM[t]) / (np.exp(p.g_y) * (1 + p.g_n[t]))) * RM[
-                t - 1
-            ]
+            RM[t] = (
+                (1 + p.g_RM[t]) / (np.exp(p.g_y) * (1 + p.g_n[t - 1]))
+            ) * RM[t - 1]
         rho_vec = np.linspace(0, 1, p.tG2 - p.tG1)
         for t in range(p.tG1, p.tG2 - 1):
             RM[t] = (
                 rho_vec[t - p.tG1] * p.alpha_RM_T * Y[t]
                 + (1 - rho_vec[t - p.tG1])
-                * ((1 + p.g_RM[t]) / (np.exp(p.g_y) * (1 + p.g_n[t])))
+                * ((1 + p.g_RM[t]) / (np.exp(p.g_y) * (1 + p.g_n[t - 1])))
                 * RM[t - 1]
             )
         RM[p.tG2 - 1 :] = p.alpha_RM_T * Y[p.tG2 - 1 :]
@@ -300,22 +301,9 @@ def get_C(c, p, method):
     """
 
     if method == "SS":
-        aggC = (
-            (c * np.transpose(p.omega_SS * p.lambdas).reshape(1, p.S, p.J))
-            .sum(-1)
-            .sum(-1)
-        )
+        aggC = (c * p.omega_SS).sum(-1).sum(-1)
     elif method == "TPI":
-        aggC = (
-            (
-                (c * np.squeeze(p.lambdas))
-                * np.tile(
-                    np.reshape(p.omega[: p.T, :], (p.T, p.S, 1)), (1, 1, p.J)
-                )
-            )
-            .sum(-1)
-            .sum(-1)
-        )
+        aggC = (c * p.omega[: p.T, :, :]).sum(-1).sum(-1)
     return aggC
 
 
@@ -402,7 +390,7 @@ def revenue(
     w_tax_liab = tax.wealth_tax_liab(r, b, 0, None, method, p)
     if method == "SS":
         p_i = np.dot(p.io_matrix, p_m)
-        pop_weights = np.transpose(p.omega_SS * p.lambdas)
+        pop_weights = p.omega_SS
         iit_payroll_tax_revenue = (inc_pay_tax_liab * pop_weights).sum()
         agg_pension_outlays = (pension_benefits * pop_weights).sum()
         UBI_outlays = (ubi * pop_weights).sum()
@@ -411,15 +399,12 @@ def revenue(
         cons_tax_revenue = (
             tax.cons_tax_liab(c, p_i, p, method) * pop_weights
         ).sum()
-        payroll_tax_revenue = p.frac_tax_payroll[-1] * iit_payroll_tax_revenue
     elif method == "TPI":
         p_i = (
             np.tile(p.io_matrix.reshape(1, p.I, p.M), (p.T, 1, 1))
             * np.tile(p_m[: p.T, :].reshape(p.T, 1, p.M), (1, p.I, 1))
         ).sum(axis=2)
-        pop_weights = np.squeeze(p.lambdas) * np.tile(
-            np.reshape(p.omega[: p.T, :], (p.T, p.S, 1)), (1, 1, p.J)
-        )
+        pop_weights = p.omega[: p.T, :, :]
         iit_payroll_tax_revenue = (
             (inc_pay_tax_liab * pop_weights).sum(1).sum(1)
         )
@@ -430,9 +415,15 @@ def revenue(
         cons_tax_revenue = (
             (tax.cons_tax_liab(c, p_i, p, method) * pop_weights).sum(1).sum(1)
         )
-        payroll_tax_revenue = (
-            p.frac_tax_payroll[: p.T] * iit_payroll_tax_revenue
-        )
+    # Payroll tax revenue is already inside iit_payroll_tax_revenue: each
+    # household's income_payroll_tax_liab includes T_P = tau_payroll *
+    # labor_income (see tax.income_tax_liab). get_payroll_tax_revenue just
+    # re-derives that same amount from the aggregate wage bill so the
+    # income vs payroll split can be reported; it must NOT be added into
+    # the total again (that double-counted payroll revenue -- Issue #1199).
+    payroll_tax_revenue = get_payroll_tax_revenue(
+        w, L, iit_payroll_tax_revenue, p, method
+    )
     business_tax_revenue = tax.get_biz_tax(w, Y, L, K, p_m, p, m, method).sum(
         -1
     )
@@ -458,6 +449,63 @@ def revenue(
         payroll_tax_revenue,
         iit_revenue,
     )
+
+
+def get_payroll_tax_revenue(w, L, iit_payroll_tax_revenue, p, method):
+    r"""
+    Calculate aggregate payroll tax revenue.
+
+    How payroll tax revenue is computed depends on how the user has
+    chosen to represent payroll taxes in the model.  If payroll taxes
+    are included directly through the ``tau_payroll`` parameter, then
+    revenue is the payroll tax rate times aggregate labor income:
+
+    .. math::
+        PR_{t} = \tau^{p}_{t}w_{t}L_{t}
+
+    Otherwise, payroll taxes are assumed to be embedded in the estimated
+    income and payroll tax functions (the default), and payroll tax
+    revenue is separated out as a fraction ``frac_tax_payroll`` of the
+    combined income and payroll tax revenue.  These two calculations are
+    identical when ``tau_payroll`` is zero.
+
+    Args:
+        w (array_like): the real wage rate
+        L (array_like): aggregate labor by industry
+        iit_payroll_tax_revenue (array_like): aggregate income and
+            payroll tax revenue
+        p (OG-Core Specifications object): model parameters
+        method (str): adjusts calculation dimensions based on 'SS' or
+            'TPI'
+
+    Returns:
+        payroll_tax_revenue (array_like): aggregate payroll tax revenue
+
+    """
+    if np.any(p.tau_payroll != 0):
+        # Payroll taxes are modeled explicitly via tau_payroll, so
+        # revenue is the payroll tax rate times aggregate labor income
+        # (summing labor across industries).
+        L_total = L.sum(-1)
+        if method == "SS":
+            payroll_tax_revenue = p.tau_payroll[-1] * w * L_total
+        else:  # TPI
+            payroll_tax_revenue = (
+                p.tau_payroll[: p.T] * w[: p.T] * L_total[: p.T]
+            )
+    else:
+        # Payroll taxes are embedded in the income and payroll tax
+        # functions, so revenue is a fraction of the combined revenue.
+        if method == "SS":
+            payroll_tax_revenue = (
+                p.frac_tax_payroll[-1] * iit_payroll_tax_revenue
+            )
+        else:  # TPI
+            payroll_tax_revenue = (
+                p.frac_tax_payroll[: p.T] * iit_payroll_tax_revenue
+            )
+
+    return payroll_tax_revenue
 
 
 def get_r_p(r, r_gov, p_m, K_vec, K_g, D, MPKg_vec, p, method):
@@ -509,7 +557,7 @@ def get_r_p(r, r_gov, p_m, K_vec, K_g, D, MPKg_vec, p, method):
     return np.squeeze(r_p)
 
 
-def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, RM):
+def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, RM, foreign_aid):
     r"""
     Compute the error in the resource constraint.
 
@@ -518,7 +566,8 @@ def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, RM):
         \text{rc_error} &= \hat{Y}_t - \hat{C}_t -
       \Bigl(e^{g_y}\bigl[1 + \tilde{g}_{n,t+1}\bigr]\hat{K}^d_{t+1} -
       \hat{K}^d_t\Bigr) - \delta\hat{K}_t - \hat{G}_t - \hat{I}_{g,t} ... \\
-        &\qquad -\: \hat{\text{net capital outflows}}_t + \hat{RM}_t
+        &\qquad -\: \hat{\text{net capital outflows}}_t + \hat{RM}_t +
+        \hat{\text{foreign aid}}_t
       \end{split}
 
     Args:
@@ -529,12 +578,13 @@ def resource_constraint(Y, C, G, I_d, I_g, net_capital_flows, RM):
         I_g (array_like): investment in government capital
         net_capital_flows (array_like): net capital outflows
         RM (array_like): aggregate remittances
+        foreign_aid (array_like): foreign aid payments
 
     Returns:
         rc_error (array_like): error in the resource constraint
 
     """
-    rc_error = Y - C - I_d - I_g - G - net_capital_flows + RM
+    rc_error = Y - C - I_d - I_g - G - net_capital_flows + RM + foreign_aid
 
     return rc_error
 

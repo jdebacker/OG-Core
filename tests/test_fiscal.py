@@ -109,6 +109,7 @@ def test_D_G_path(
         "budget_balance": budget_balance,
         "r_gov_DY": r_gov_DY,
         "r_gov_DY2": r_gov_DY2,
+        "alpha_FA": [0.01],
     }
     p.update_specifications(new_param_values, raise_errors=False)
     r = np.ones(p.T + p.S) * 0.05
@@ -132,6 +133,7 @@ def test_D_G_path(
     test_tuple = fiscal.D_G_path(r, dg_fixed_values, p)
 
     for i, v in enumerate(test_tuple):
+        print(f"Testing {i}...")
         assert np.allclose(v[: p.T], expected_tuple[i][: p.T])
 
 
@@ -290,6 +292,19 @@ r = 0.04
 r_gov1 = 0.02
 r_gov2 = 0.01
 r_gov3 = 0.0
+# p5/p6: the wedge of p3 (which the default floor clips to zero), with the
+# floor lowered so the negative rate comes through, and with the floor set
+# above the wedge so it still binds.
+p5 = Specifications()
+p5.update_specifications(
+    {"r_gov_scale": [0.5], "r_gov_shift": [0.03], "r_gov_floor": -0.05}
+)
+r_gov5 = 0.5 * 0.04 - 0.03  # -0.01, no longer clipped
+p6 = Specifications()
+p6.update_specifications(
+    {"r_gov_scale": [0.5], "r_gov_shift": [0.03], "r_gov_floor": -0.005}
+)
+r_gov6 = -0.005  # floor binds
 p_tpi = Specifications()
 p_tpi.update_specifications(
     {
@@ -321,6 +336,13 @@ r_gov4 = (
 )
 
 
+p_tpi_floor = Specifications()
+p_tpi_floor.update_specifications(
+    {"r_gov_scale": [1.5], "r_gov_shift": [0.09], "r_gov_floor": -0.05}
+)
+r_gov_tpi_floor = 1.5 * r_tpi[: p_tpi_floor.T] - 0.09
+
+
 @pytest.mark.parametrize(
     "r,p,DY_ratio,method,t,r_gov_expected",
     [
@@ -330,6 +352,9 @@ r_gov4 = (
         (r_tpi, p_tpi, DY_tpi, "TPI", None, r_gov_tpi),
         (r, p3, 0, "scalar", 0, r_gov3),
         (r, p4, 0.5, "scalar", 0, r_gov4),
+        (r, p5, 0, "scalar", -1, r_gov5),
+        (r, p6, 0, "scalar", -1, r_gov6),
+        (r_tpi, p_tpi_floor, DY_tpi, "TPI", None, r_gov_tpi_floor),
     ],
     ids=[
         "Scale only",
@@ -338,6 +363,9 @@ r_gov4 = (
         "TPI",
         "scalar",
         "DY params",
+        "negative floor lets r_gov < 0",
+        "floor still binds",
+        "negative floor, TPI",
     ],
 )
 def test_get_r_gov(r, p, DY_ratio, method, t, r_gov_expected):

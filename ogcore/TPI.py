@@ -13,13 +13,27 @@ This module contains the following functions:
 import numpy as np
 import pickle
 import scipy.optimize as opt
-from ogcore import tax, utils, household, firm, fiscal, pensions
+from scipy.sparse import csr_matrix
+from ogcore import tax, utils, household, firm, fiscal, pensions, solvers
 from ogcore import aggregates as aggr
 from ogcore.constants import SHOW_RUNTIME
 import os
 import warnings
 import logging
 from distributed import wait
+
+# ``approx_derivative`` and ``group_columns`` live in a private scipy module
+# (scipy.optimize._numdiff). Guard the import so a future scipy change disables
+# the optional sparse-FOC-Jacobian path -- falling back to dense finite
+# differences -- instead of breaking TPI entirely.
+try:
+    from scipy.optimize._numdiff import approx_derivative, group_columns
+
+    _HAVE_SPARSE_FD = True
+except Exception:  # pragma: no cover
+    approx_derivative = None
+    group_columns = None
+    _HAVE_SPARSE_FD = False
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +49,91 @@ MINIMIZER_TOL = 1e-13
 Set flag for enforcement of solution check
 """
 ENFORCE_SOLUTION_CHECKS = True
+
+
+_BANDED_JAC_CACHE = {}
+
+
+def _detect_jac_sparsity(fun, x0, args, thr_rel=1e-9):
+    """Auto-detect the Jacobian sparsity of `fun` near x0 and return a
+    (csr_pattern, groups) coloring for sparse finite differences, or None if
+    the Jacobian is too dense to benefit (caller then uses plain dense FD).
+
+    One-time per problem dimension (cached). The pattern is unioned over two
+    nearby points so a coupling that happens to vanish at one point is not
+    missed. Portable across countries/calibrations/pensions: it reads the
+    *actual* structure each run rather than assuming a stencil, so a
+    history-dependent pension (dense columns) is detected automatically and
+    falls back to dense finite differences.
+
+    Args:
+        fun (function): the residual function whose Jacobian is probed
+        x0 (array_like): point at which to probe the sparsity
+        args (tuple): extra arguments passed to ``fun``
+        thr_rel (float): relative threshold below which an entry is treated
+            as a structural zero
+
+    Returns:
+        result (tuple or None): ``(csr_pattern, groups)`` coloring for sparse
+            finite differences, or None if the Jacobian is not sparse enough
+            to benefit
+    """
+    n = len(x0)
+    key = (getattr(fun, "__name__", repr(fun)), n)
+    cached = _BANDED_JAC_CACHE.get(key, "miss")
+    if cached != "miss":
+        return cached
+    result = None
+    try:
+        x = np.asarray(x0, dtype=float)
+        mask = np.zeros((n, n), dtype=bool)
+        for xp in (x, x * 1.05 + 0.01):
+            Jd = approx_derivative(fun, xp, args=args, method="2-point")
+            sc = max(float(np.max(np.abs(Jd))), 1e-300)
+            mask |= np.abs(Jd) > thr_rel * sc
+        P = csr_matrix(mask.astype(int))
+        groups = group_columns(P)
+        if int(groups.max()) + 1 < n // 2:
+            result = (P, groups)
+        # else: pattern not sparse enough to benefit (expected at small
+        # firstdoughnutring dims); silently return None so the caller uses
+        # dense FD without surfacing a noisy notice.
+    except Exception:
+        result = None
+    _BANDED_JAC_CACHE[key] = result
+    return result
+
+
+def _banded_jac_for(fun, x0, args, enabled):
+    """Return a sparse finite-difference `jac` callable for ``opt.root`` when
+    ``enabled`` (``p.use_sparse_FOC_jac``) and the Jacobian is sparse enough to
+    benefit; otherwise None, so the caller uses the default dense solver. Used
+    at the household full-lifetime and triangle root-finds.
+
+    Args:
+        fun (function): the residual function passed to ``opt.root``
+        x0 (array_like): initial guess for the root-find
+        args (tuple): extra arguments passed to ``fun``
+        enabled (bool): value of ``p.use_sparse_FOC_jac``
+
+    Returns:
+        _jac (function or None): a callable returning the dense Jacobian built
+            by sparse finite differences, or None to use dense finite
+            differences
+    """
+    if not enabled or not _HAVE_SPARSE_FD:
+        return None
+    bj = _detect_jac_sparsity(fun, x0, args)
+    if bj is None:
+        return None
+    P, groups = bj
+
+    def _jac(_x, *_a):
+        return approx_derivative(
+            fun, _x, args=_a, method="2-point", sparsity=(P, groups)
+        ).toarray()
+
+    return _jac
 
 
 def get_initial_SS_values(p):
@@ -65,6 +164,13 @@ def get_initial_SS_values(p):
     B0 = aggr.get_B(ss_baseline_vars["b_sp1"], p, "SS", True)
     initial_b = ss_baseline_vars["b_sp1"] * (ss_baseline_vars["B"] / B0)
     initial_n = ss_baseline_vars["n"]
+    # The DB/NDC/PS pension formulas need the labor supplied before the
+    # time path begins by cohorts alive at t=0. Use the model's initial
+    # labor condition (the same baseline object that initializes wealth);
+    # pre-time-path wages are anchored to the period-0 wage of the
+    # current path inside pensions.py. See Issue #1014 for a fully
+    # history-consistent treatment.
+    p.n_preTP = initial_n
 
     Ybaseline = None
     TRbaseline = None
@@ -189,7 +295,7 @@ def firstdoughnutring(
         np.array([tr]),
         np.array([ubi]),
         theta[j],
-        p.rho[0, -1],
+        p.rho[0, -1, j],
         p.etr_params[0][-1],
         p.mtry_params[0][-1],
         None,
@@ -302,7 +408,7 @@ def twist_doughnut(
     p_i_s = p_i[t : t + length, :]
     n_s = n_guess
     chi_n_s = np.diag(p.chi_n[t : t + p.S, :], max(p.S - length, 0))
-    rho_s = np.diag(p.rho[t : t + p.S, :], max(p.S - length, 0))
+    rho_s = np.diag(p.rho[t : t + p.S, :, j], max(p.S - length, 0))
 
     error1 = household.FOC_savings(
         r_s,
@@ -489,32 +595,47 @@ def inner_loop(guesses, outer_loop_vars, initial_values, ubi, j, ind, p):
         ]
         mtry_params_to_use = _params_to_array(temp_mtry, p.tax_func_type)
 
-        solutions = opt.root(
-            twist_doughnut,
-            list(b_guesses_to_use) + list(n_guesses_to_use),
-            args=(
-                r_p,
-                w,
-                p_tilde,
-                p_i,
-                bq_to_use,
-                rm_to_use,
-                tr_to_use,
-                theta_to_use,
-                factor,
-                ubi_to_use,
-                j,
-                s,
-                0,
-                etr_params_to_use,
-                mtrx_params_to_use,
-                mtry_params_to_use,
-                initial_b,
-                p,
-            ),
-            method=p.FOC_root_method,
-            tol=MINIMIZER_TOL,
+        _tri_x0 = list(b_guesses_to_use) + list(n_guesses_to_use)
+        _tri_args = (
+            r_p,
+            w,
+            p_tilde,
+            p_i,
+            bq_to_use,
+            rm_to_use,
+            tr_to_use,
+            theta_to_use,
+            factor,
+            ubi_to_use,
+            j,
+            s,
+            0,
+            etr_params_to_use,
+            mtrx_params_to_use,
+            mtry_params_to_use,
+            initial_b,
+            p,
         )
+        _tri_jac = _banded_jac_for(
+            twist_doughnut, _tri_x0, _tri_args, p.use_sparse_FOC_jac
+        )
+        try:
+            solutions = opt.root(
+                twist_doughnut,
+                _tri_x0,
+                args=_tri_args,
+                method=p.FOC_root_method,
+                tol=MINIMIZER_TOL,
+                jac=_tri_jac,
+            )
+        except Exception:
+            solutions = opt.root(
+                twist_doughnut,
+                _tri_x0,
+                args=_tri_args,
+                method=p.FOC_root_method,
+                tol=MINIMIZER_TOL,
+            )
 
         b_vec = solutions.x[: int(len(solutions.x) / 2)]
         b_mat[ind2, p.S - (s + 2) + ind2] = b_vec
@@ -554,32 +675,52 @@ def inner_loop(guesses, outer_loop_vars, initial_values, ubi, j, ind, p):
             p.tax_func_type,
         )
 
-        solutions = opt.root(
-            twist_doughnut,
-            list(b_guesses_to_use) + list(n_guesses_to_use),
-            args=(
-                r_p,
-                w,
-                p_tilde,
-                p_i,
-                bq_to_use,
-                rm_to_use,
-                tr_to_use,
-                theta_to_use,
-                factor,
-                ubi_to_use,
-                j,
-                None,
-                t,
-                etr_params_to_use,
-                mtrx_params_to_use,
-                mtry_params_to_use,
-                initial_b,
-                p,
-            ),
-            method=p.FOC_root_method,
-            tol=MINIMIZER_TOL,
+        _td_args = (
+            r_p,
+            w,
+            p_tilde,
+            p_i,
+            bq_to_use,
+            rm_to_use,
+            tr_to_use,
+            theta_to_use,
+            factor,
+            ubi_to_use,
+            j,
+            None,
+            t,
+            etr_params_to_use,
+            mtrx_params_to_use,
+            mtry_params_to_use,
+            initial_b,
+            p,
         )
+        _td_x0 = list(b_guesses_to_use) + list(n_guesses_to_use)
+        # When p.use_sparse_FOC_jac is set, supply a banded finite-difference
+        # Jacobian (far fewer evaluations per build); otherwise _bj_jac is None
+        # and opt.root uses its default dense finite differences. The except
+        # clause is a safety net: any solver failure retries with the dense
+        # Jacobian, so the result is unchanged.
+        _bj_jac = _banded_jac_for(
+            twist_doughnut, _td_x0, _td_args, p.use_sparse_FOC_jac
+        )
+        try:
+            solutions = opt.root(
+                twist_doughnut,
+                _td_x0,
+                args=_td_args,
+                method=p.FOC_root_method,
+                tol=MINIMIZER_TOL,
+                jac=_bj_jac,
+            )
+        except Exception:
+            solutions = opt.root(
+                twist_doughnut,
+                _td_x0,
+                args=_td_args,
+                method=p.FOC_root_method,
+                tol=MINIMIZER_TOL,
+            )
         euler_errors[t, :] = solutions.fun
 
         b_vec = solutions.x[: p.S]
@@ -588,6 +729,36 @@ def inner_loop(guesses, outer_loop_vars, initial_values, ubi, j, ind, p):
         n_mat[t + ind, ind] = n_vec
 
     return euler_errors, b_mat, n_mat
+
+
+def _rc_error_message(RC_error, RC_TPI):
+    """
+    Build the message for a transition resource-constraint failure.
+
+    Reports the maximum absolute resource-constraint error, the period it
+    occurs in, and how to read it: a violation confined to the first or last
+    periods is usually an initial- or terminal-boundary artifact, while one
+    spread across the path points to an inconsistent calibration.
+
+    Args:
+        RC_error (array_like): resource constraint error, time on axis 0
+        RC_TPI (scalar): the tolerance the error is checked against
+
+    Returns:
+        msg (str): the diagnostic error message
+    """
+    abs_rc = np.absolute(RC_error)
+    rc_by_period = abs_rc.reshape(abs_rc.shape[0], -1).max(axis=1)
+    t_worst = int(np.argmax(rc_by_period))
+    return (
+        "Transition path equilibrium not found (RC_error): max "
+        f"|resource constraint error| = {rc_by_period[t_worst]:.2e} at "
+        f"period {t_worst} of {rc_by_period.shape[0]} (tolerance "
+        f"RC_TPI = {RC_TPI}). A violation confined to the first or last "
+        "periods is usually an initial- or terminal-boundary artifact; one "
+        "spread across the path points to an inconsistent calibration "
+        "(spending, revenue, debt_ratio_ss)."
+    )
 
 
 def run_TPI(p, client=None):
@@ -603,6 +774,8 @@ def run_TPI(p, client=None):
             results
 
     """
+    if p.use_sparse_FOC_jac and not _HAVE_SPARSE_FD:
+        print("[TPI] sparse FOC jacobian unavailable; using dense")
     # unpack tuples of parameters
     initial_values, ss_vars, theta, baseline_values = get_initial_SS_values(p)
     B0, b_sinit, b_splus1init, factor, initial_b, initial_n = initial_values
@@ -788,26 +961,50 @@ def run_TPI(p, client=None):
     TPIdist = 10
     euler_errors = np.zeros((p.T, 2 * p.S, p.J))
     TPIdist_vec = np.zeros(p.maxiter)
+    stall = None
+    stall_reported = None
+    # Pluggable outer-loop update rule. Default "picard" -> None -> the native
+    # damped functional-iteration path below (unchanged, so golden outputs
+    # are preserved); "anderson" accelerates using the residual history. See
+    # ogcore.solvers.
+    outer_updater = solvers.make_outer_updater(
+        getattr(p, "TPI_outer_method", "picard"), p
+    )
+    # Optional trust region for the accelerated step ("anchored" Anderson):
+    # clamp each step to within trust_radius x the damped-step length of the
+    # always-feasible damped point, growing the radius after an improving step
+    # and shrinking it (with a reset) after a worsening one. This keeps the
+    # accelerated iterate near a feasible point -- the standard cure for the
+    # overshoot-into-infeasible-region divergence of unguarded accelerators.
+    # Defaults to 1.0 (anchored) when accelerating; a non-positive radius
+    # disables the trust region (unguarded accelerator, for testing only).
+    trust_radius = getattr(p, "TPI_trust_radius", 1.0)
+    if trust_radius is not None and trust_radius <= 0:
+        trust_radius = None
+    trust_radius_min = getattr(p, "TPI_trust_radius_min", 0.1)
+    trust_radius_max = getattr(p, "TPI_trust_radius_max", 10.0)
+    prev_accel_dist = np.inf
 
-    # Before scattering, temporarily remove unpicklable schema objects
-    schema_backup = {}
-    for attr in ["_defaults_schema", "_validator_schema", "sel"]:
-        if hasattr(p, attr):
-            schema_backup[attr] = getattr(p, attr)
+    if client:
+        # Before scattering, temporarily remove unpicklable schema objects
+        schema_backup = {}
+        for attr in ["_defaults_schema", "_validator_schema", "sel"]:
+            if hasattr(p, attr):
+                schema_backup[attr] = getattr(p, attr)
+                try:
+                    delattr(p, attr)
+                except Exception:
+                    pass
+
+        # Scatter the parameters
+        scattered_p_future = client.scatter(p, broadcast=True)
+
+        # Restore the schema objects (they're not needed by workers anyway)
+        for attr, value in schema_backup.items():
             try:
-                delattr(p, attr)
+                setattr(p, attr, value)
             except Exception:
                 pass
-
-    # Scatter the parameters
-    scattered_p_future = client.scatter(p, broadcast=True)
-
-    # Restore the schema objects (they're not needed by workers anyway)
-    for attr, value in schema_backup.items():
-        try:
-            setattr(p, attr, value)
-        except Exception:
-            pass
 
     # TPI loop
     while (TPIiter < p.maxiter) and (TPIdist >= p.mindist_TPI):
@@ -1230,17 +1427,80 @@ def run_TPI(p, client=None):
         RM = np.concatenate([RM, np.ones(p.S) * RM[-1]])
 
         # update vars for next iteration
-        w[: p.T] = utils.convex_combo(wnew[: p.T], w[: p.T], p.nu)
-        r[: p.T] = utils.convex_combo(rnew[: p.T], r[: p.T], p.nu)
+        if outer_updater is None:
+            # "picard": the historical damped functional-iteration step,
+            # unchanged, so the default behavior (and golden outputs) is
+            # preserved exactly.
+            w[: p.T] = utils.convex_combo(wnew[: p.T], w[: p.T], p.nu)
+            r[: p.T] = utils.convex_combo(rnew[: p.T], r[: p.T], p.nu)
+            r_p[: p.T] = utils.convex_combo(r_p_new[: p.T], r_p[: p.T], p.nu)
+            p_m[: p.T, :] = utils.convex_combo(
+                new_p_m[: p.T, :], p_m[: p.T, :], p.nu
+            )
+            BQ[: p.T] = utils.convex_combo(BQnew[: p.T], BQ[: p.T], p.nu)
+            if not p.baseline_spending:
+                TR[: p.T] = utils.convex_combo(TR_new[: p.T], TR[: p.T], p.nu)
+        else:
+            # Accelerated outer step on the packed macro/price vector
+            # {r_p, r, w, p_m, BQ[, TR]}; the update rule (Anderson) uses the
+            # recent residual history. Auxiliaries stay damped below.
+            blocks = [
+                (r_p, r_p_new),
+                (r, rnew),
+                (w, wnew),
+                (p_m, new_p_m),
+                (BQ, BQnew),
+            ]
+            if not p.baseline_spending:
+                blocks.append((TR, TR_new))
+            x, gx = solvers.pack_outer_vars(blocks, p.T)
+            # True fixed-point residual (implied vs the PRE-update guess). The
+            # post-update TPIdist below is spuriously ~0 for steps that set
+            # x_next ~= gx (e.g. Anderson's undamped first step), so it is
+            # overridden with this to avoid declaring false convergence.
+            accel_dist = float(np.max(utils.pct_diff_func(gx, x)))
+            # Anchored/trust-region control: grow the radius after an improving
+            # accelerated step and shrink it (resetting the memory) after a
+            # worsening one, using the residual trend as the accept/reject
+            # signal. None => unclamped.
+            if trust_radius is not None and TPIiter > 0:
+                if accel_dist <= prev_accel_dist:
+                    trust_radius = min(trust_radius_max, trust_radius * 1.5)
+                else:
+                    trust_radius = max(trust_radius_min, trust_radius * 0.5)
+                    outer_updater.reset()
+                    logger.info(
+                        f"accel step worsened; trust radius -> {trust_radius}"
+                    )
+            prev_accel_dist = accel_dist
+            # Accelerate the DAMPED map (1-nu)x + nu*G(x), which is contractive
+            # at the calibrated nu, rather than the raw map G -- G is
+            # non-contractive on the stiff case (why Picard needs a low nu), so
+            # accelerating it directly overshoots and diverges. Same fixed
+            # point; convergence is still measured on the raw residual above.
+            gx_damped = (1.0 - p.nu) * x + p.nu * gx
+            x_next = outer_updater.update(x, gx_damped)
+            if not np.all(np.isfinite(x_next)):
+                # accelerated step blew up -> damped Picard fallback + reset
+                x_next = p.nu * gx + (1.0 - p.nu) * x
+                outer_updater.reset()
+                logger.info(
+                    "accelerated step non-finite; Picard fallback + reset"
+                )
+            elif trust_radius is not None:
+                # Clamp the accelerated step to the trust region around the
+                # always-feasible damped point gx_damped, sized relative to the
+                # damped step length so it tightens as the solve converges.
+                dev = x_next - gx_damped
+                dev_norm = float(np.linalg.norm(dev))
+                max_dev = trust_radius * float(np.linalg.norm(gx_damped - x))
+                if dev_norm > max_dev > 0.0:
+                    x_next = gx_damped + dev * (max_dev / dev_norm)
+            solvers.unpack_outer_vars(x_next, blocks, p.T)
+        # Auxiliaries (unchanged): government rate, debt, and the household
+        # policy warm-starts stay on the damped update.
         r_gov[: p.T] = utils.convex_combo(r_gov_new[: p.T], r_gov[: p.T], p.nu)
-        r_p[: p.T] = utils.convex_combo(r_p_new[: p.T], r_p[: p.T], p.nu)
-        p_m[: p.T, :] = utils.convex_combo(
-            new_p_m[: p.T, :], p_m[: p.T, :], p.nu
-        )
-        BQ[: p.T] = utils.convex_combo(BQnew[: p.T], BQ[: p.T], p.nu)
         D[: p.T] = Dnew[: p.T]
-        if not p.baseline_spending:
-            TR[: p.T] = utils.convex_combo(TR_new[: p.T], TR[: p.T], p.nu)
         guesses_b = utils.convex_combo(b_mat, guesses_b, p.nu)
         guesses_n = utils.convex_combo(n_mat, guesses_n, p.nu)
         logger.info(
@@ -1278,18 +1538,57 @@ def run_TPI(p, client=None):
             + list(utils.pct_diff_func(BQnew[: p.T], BQ[: p.T]).flatten())
             + list(utils.pct_diff_func(TR_new[: p.T], TR[: p.T]))
         ).max()
+        if outer_updater is not None:
+            # accelerated methods: use the true residual accel_dist, computed
+            # above from the pre-update guess, because the post-update
+            # distance can be spuriously ~0 for accelerated steps.
+            TPIdist = accel_dist
 
         TPIdist_vec[TPIiter] = TPIdist
-        # After T=10, if cycling occurs, drop the value of nu
-        # wait til after T=10 or so, because sometimes there is a jump up
-        # in the first couple iterations
-        # if TPIiter > 10:
-        #     if TPIdist_vec[TPIiter] - TPIdist_vec[TPIiter - 1] > 0:
-        #         nu /= 2
-        #         print 'New Value of nu:', nu
+        # Accelerated safety net: if a step raised the distance sharply or went
+        # non-finite, reset the accelerator so the next step is a fresh damped
+        # restart (prevents runaway on the stiff case). Never fires for picard.
+        if outer_updater is not None and TPIiter > 0:
+            if (
+                not np.isfinite(TPIdist)
+                or TPIdist > 10.0 * TPIdist_vec[TPIiter - 1]
+            ):
+                outer_updater.reset()
+                logger.info("accelerated step diverged; reset accelerator")
         TPIiter += 1
         logger.info(f"Iteration: {TPIiter}")
         logger.info(f"Distance: {TPIdist}")
+        # Stall detection: when the best distance has stopped improving
+        # over a window of iterations, further iterations repeat the same
+        # pattern and cannot reach the tolerance -- diagnose the cause and,
+        # if TPI_stall_action="stop", end the loop early (the solution
+        # checks after the loop then fail the run as any non-convergence).
+        # In the default warn mode the diagnosis is logged once per stall,
+        # and again only if it changes (e.g. escalates to diverging).
+        stall = solvers.diagnose_stall(
+            TPIdist_vec, TPIiter, p.TPI_stall_window
+        )
+        if stall != stall_reported:
+            stall_reported = stall
+            if stall == "diverging":
+                logger.error(
+                    "TPI stalled and diverging: the best distance over "
+                    f"the last {p.TPI_stall_window} iterations is far "
+                    "above the earlier best. This usually signals an "
+                    "inconsistent fiscal block (spending, revenue, and "
+                    "debt_ratio_ss), not a solver problem."
+                )
+            elif stall == "oscillating":
+                logger.error(
+                    "TPI stalled: the best distance has not improved "
+                    f"over the last {p.TPI_stall_window} iterations "
+                    f"(current {TPIdist:.2e}, tolerance "
+                    f"{p.mindist_TPI}). The outer loop is cycling; try "
+                    "a lower nu, or TPI_outer_method='anderson' if not "
+                    "already enabled."
+                )
+        if stall is not None and p.TPI_stall_action == "stop":
+            break
 
     # Compute effective and marginal tax rates for all agents
     num_params = len(p.mtrx_params[0][0])
@@ -1413,6 +1712,8 @@ def run_TPI(p, client=None):
     net_capital_outflows_vec[:, -1] = net_capital_outflows[: p.T]
     RM_vec = np.zeros((p.T, p.M))
     RM_vec[:, -1] = RM[: p.T]
+    foreign_aid_vec = np.zeros((p.T, p.M))
+    foreign_aid_vec[:, -1] = p.alpha_FA[: p.T] * Y[: p.T]
     RC_error = aggr.resource_constraint(
         Y_vec,
         C_m_vec,
@@ -1421,6 +1722,7 @@ def run_TPI(p, client=None):
         I_g_vec,
         net_capital_outflows_vec,
         RM_vec,
+        foreign_aid_vec,
     )
     # Compute total investment (not just domestic)
     I_total = aggr.get_I(None, K[1 : p.T + 1], K[: p.T], p, "total_tpi")
@@ -1530,6 +1832,8 @@ def run_TPI(p, client=None):
         "etr": etr_path[: p.T, ...],
         "mtrx": mtrx_path[: p.T, ...],
         "mtry": mtry_path[: p.T, ...],
+        "theta": theta,
+        "factor": factor,
         "euler_savings": eul_savings[: p.T, ...],
         "euler_labor_leisure": eul_laborleisure[: p.T, ...],
         "resource_constraint_error": RC_error[: p.T, ...],
@@ -1550,14 +1854,21 @@ def run_TPI(p, client=None):
     if (
         (TPIiter >= p.maxiter) or (np.absolute(TPIdist) > p.mindist_TPI)
     ) and ENFORCE_SOLUTION_CHECKS:
-        raise RuntimeError(
-            "Transition path equlibrium not found" + " (TPIdist)"
-        )
+        msg = "Transition path equlibrium not found (TPIdist)"
+        if stall == "oscillating":
+            msg += (
+                "; the outer loop stalled cycling -- try a lower nu, or "
+                "TPI_outer_method='anderson'"
+            )
+        elif stall == "diverging":
+            msg += (
+                "; the outer loop stalled diverging -- check the fiscal "
+                "block (spending, revenue, debt_ratio_ss)"
+            )
+        raise RuntimeError(msg)
 
     if (np.any(np.absolute(RC_error) >= p.RC_TPI)) and ENFORCE_SOLUTION_CHECKS:
-        raise RuntimeError(
-            "Transition path equlibrium not found " + "(RC_error)"
-        )
+        raise RuntimeError(_rc_error_message(RC_error, p.RC_TPI))
 
     if (
         np.any(np.absolute(eul_savings) >= p.mindist_TPI)

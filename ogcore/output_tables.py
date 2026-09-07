@@ -207,6 +207,96 @@ def macro_table_SS(
     return table
 
 
+def npv_table(
+    base_tpi,
+    base_params,
+    reform_tpi,
+    reform_params,
+    var_list=["Y"],
+    discount_rates=[0.01, 0.02, 0.03, 0.04, 0.06],
+    num_years=10,
+    stationarized=False,
+    start_year=DEFAULT_START_YEAR,
+    table_format=None,
+    path=None,
+):
+    """
+    Create a table of the net present value (NPV) of the change
+    (reform minus baseline) in flow variables over a horizon, computed
+    at several discount rates.
+
+    For each variable the NPV is
+
+    .. math::
+        NPV = \\sum_{t=0}^{num\\_years-1}
+        \\frac{x^{reform}_{t} - x^{base}_{t}}{(1 + r)^{t}}
+
+    where :math:`x_{t}` is the value of the variable in period `t` and
+    `r` is the discount rate. Values are un-stationarized by default so
+    the NPV is taken over the actual (trend-inclusive) level path, which
+    is the economically meaningful object to discount; pass
+    `stationarized=True` to discount the stationarized model values
+    instead. Results are in the same units as the variable (model
+    units); to express them in dollars, scale by the model's `factor`.
+
+    Args:
+        base_tpi (dictionary): TPI output from baseline run
+        base_params (OG-Core Specifications class): baseline parameters
+            object
+        reform_tpi (dictionary): TPI output from reform run
+        reform_params (OG-Core Specifications class): reform parameters
+            object
+        var_list (list): names of variables to include in the table
+        discount_rates (list): annual discount rates to compute the NPV
+            at, each expressed as a decimal (e.g. 0.03 for 3%)
+        num_years (integer): number of years to include in the NPV sum
+        stationarized (bool): whether to use the stationarized model
+            values; if False (default) the variables are un-stationarized
+            before discounting
+        start_year (integer): first year of the NPV window
+        table_format (string): format to return table in: 'csv', 'tex',
+            'excel', 'json', if None, a DataFrame is returned
+        path (string): path to save table to
+
+    Returns:
+        table (various): table in DataFrame or string format or `None`
+            if saved to disk
+
+    """
+    assert reform_tpi is not None, (
+        "npv_table computes the NPV of the reform-minus-baseline change, "
+        "so a reform run is required."
+    )
+    assert isinstance(start_year, (int, np.integer))
+    assert isinstance(num_years, (int, np.integer))
+    assert num_years <= base_params.T
+    # Make sure both runs cover the same time period
+    assert base_params.start_year == reform_params.start_year
+    start_index = start_year - base_params.start_year
+    periods = np.arange(num_years)
+    # Difference in each variable over the NPV window, un-stationarized
+    # unless the caller asks for the stationarized values
+    diffs = {}
+    for v in var_list:
+        if stationarized:
+            base_v = base_tpi[v]
+            reform_v = reform_tpi[v]
+        else:
+            base_v = unstationarize_vars(v, base_tpi, base_params)
+            reform_v = unstationarize_vars(v, reform_tpi, reform_params)
+        diffs[v] = (reform_v - base_v)[start_index : start_index + num_years]
+    table_dict = {"Variable": [VAR_LABELS[v] for v in var_list]}
+    for r in discount_rates:
+        discount = (1 + r) ** periods
+        table_dict["{:.1%}".format(r)] = [
+            (diffs[v] / discount).sum() for v in var_list
+        ]
+    table_df = pd.DataFrame.from_dict(table_dict, orient="columns")
+    table = save_return_table(table_df, table_format, path)
+
+    return table
+
+
 def ineq_table(
     base_ss,
     base_params,
@@ -752,9 +842,7 @@ def dynamic_revenue_decomposition(
         None,
         "TPI",
     ).sum(axis=-1)
-    pop_weights = np.squeeze(base_params.lambdas) * np.tile(
-        np.reshape(base_params.omega[:T, :], (T, S, 1)), (1, 1, J)
-    )
+    pop_weights = base_params.omega[:T, :, :]
     for k in indiv_liab.keys():
         tax_rev_dict["indiv"][k] = (indiv_liab[k] * pop_weights).sum(1).sum(1)
         tax_rev_dict["total"][k] = (
@@ -985,5 +1073,197 @@ def dynamic_revenue_decomposition(
     table_df.reset_index(inplace=True)
     table_df.rename(columns={"index": "Variable"}, inplace=True)
     table = save_return_table(table_df, table_format, path)
+
+    return table
+
+
+def model_fit_table(
+    targets_dict,
+    params,
+    tpi_output,
+    t=0,
+    table_format=None,
+    path=None,
+):
+    """
+    Creates a table summarizing the model fit.
+
+    Args:
+        targets_dict (dict): maps each parameter name to a one-item
+            dict ``{target_description: data_value}``, e.g.::
+
+                {
+                    'Gini coefficient of wealth': 0.82,
+                    'Investment rate (I/K)': 0.07,
+                    'Gini coefficient of income': 0.55,
+                }
+
+        params (OG-Core Specifications class): model parameters object
+        tpi_output (dict): output dictionary returned by ``TPI.run_TPI``
+        t (int): period index used for model moment calculations.
+            Defaults to ``0`` (first period of the transition path).
+            Pass ``-1`` to use the last period, which approximates
+            steady-state values.
+        table_format (string): format to return table in: ``'csv'``,
+            ``'tex'``, ``'excel'``, ``'json'``; if ``None`` a
+            DataFrame is returned
+        path (string): path to save table to
+
+    Returns:
+        table (various): table as a DataFrame, formatted string, or
+            ``None`` if saved to disk
+
+    """
+    # Ordered groups and the moment descriptions belonging to each
+    MOMENT_GROUPS = [
+        (
+            "Macroeconomic moments",
+            [
+                r"Investment rate $(I/K)$",
+                r"Capital-Output ratio $(K/Y)$",
+                r"Consumption-Output ratio $(C/Y)$",
+                r"Savings rate $(B/Y)$",
+                r"Interest rate $(r)$",
+                r"Capital share of output",
+                r"Labor share of output",
+            ],
+        ),
+        (
+            "Fiscal moments",
+            [
+                r"Revenue to GDP ratio $(T/Y)$",
+                r"Gov't consumption to GDP ratio $(G/Y)$",
+                r"Pension outlays to GDP ratio $(Pension/Y)$",
+                r"Infrastructure spending to GDP ratio $(I_g/Y)$",
+                r"Debt to GDP ratio $(D/Y)$",
+            ],
+        ),
+        (
+            "Distributional moments",
+            [
+                "Gini coefficient, wealth",
+                "Gini coefficient, income",
+                "Gini coefficient, after-tax income",
+            ],
+        ),
+        (
+            "Demographic moments",
+            [
+                r"Fraction 65+",
+                r"Pop growth rate",
+            ],
+        ),
+    ]
+
+    # Compute model moments for all entries in targets_dict
+    computed = {}
+    for moment, data_val in targets_dict.items():
+        target_desc = moment
+
+        # Macroeconomic moments
+        if target_desc == r"Investment rate $(I/K)$":
+            model_val = tpi_output["I"][t] / tpi_output["K"][t]
+        elif target_desc == r"Capital-Output ratio $(K/Y)$":
+            model_val = tpi_output["K"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Consumption-Output ratio $(C/Y)$":
+            model_val = tpi_output["C"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Savings rate $(B/Y)$":
+            model_val = tpi_output["B"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Interest rate $(r)$":
+            model_val = tpi_output["r"][t]
+        elif target_desc == r"Capital share of output":
+            model_val = (
+                1
+                - tpi_output["w"][t] * tpi_output["L"][t] / tpi_output["Y"][t]
+            )
+        elif target_desc == r"Labor share of output":
+            model_val = (
+                tpi_output["w"][t] * tpi_output["L"][t] / tpi_output["Y"][t]
+            )
+        # Fiscal moments
+        elif target_desc == r"Revenue to GDP ratio $(T/Y)$":
+            model_val = tpi_output["total_tax_revenue"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Gov't consumption to GDP ratio $(G/Y)$":
+            model_val = tpi_output["G"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Pension outlays to GDP ratio $(Pension/Y)$":
+            model_val = (
+                tpi_output["agg_pension_outlays"][t] / tpi_output["Y"][t]
+            )
+        elif target_desc == r"Infrastructure spending to GDP ratio $(I_g/Y)$":
+            model_val = tpi_output["I_g"][t] / tpi_output["Y"][t]
+        elif target_desc == r"Debt to GDP ratio $(D/Y)$":
+            model_val = tpi_output["D"][t] / tpi_output["Y"][t]
+        # Distributional moments
+        elif target_desc == "Gini coefficient, wealth":
+            dist = tpi_output["b_sp1"][t]
+            pop_weights = params.omega[t]
+            pop_weights = pop_weights / pop_weights.sum()
+            ineq = Inequality(
+                dist, pop_weights, params.lambdas, params.S, params.J
+            )
+            model_val = ineq.gini()
+        elif target_desc == "Gini coefficient, income":
+            dist = tpi_output["before_tax_income"][t]
+            pop_weights = params.omega[t]
+            pop_weights = pop_weights / pop_weights.sum()
+            ineq = Inequality(
+                dist, pop_weights, params.lambdas, params.S, params.J
+            )
+            model_val = ineq.gini()
+        elif target_desc == "Gini coefficient, after-tax income":
+            dist = (
+                tpi_output["before_tax_income"][t]
+                - tpi_output["hh_net_taxes"][t]
+            )
+            pop_weights = params.omega[t]
+            pop_weights = pop_weights / pop_weights.sum()
+            ineq = Inequality(
+                dist, pop_weights, params.lambdas, params.S, params.J
+            )
+            model_val = ineq.gini()
+        # Demographic moments
+        elif target_desc == r"Fraction 65+":
+            idx_65 = max(0, 65 - params.starting_age)
+            omega_t = params.omega[t]
+            model_val = omega_t[idx_65:].sum() / omega_t.sum()
+        elif target_desc == r"Pop growth rate":
+            # g_n[t] is now growth from period t to t+1; the boundary
+            # growth into period 0 lives in g_n_preTP. Report the growth
+            # into period t so this stays calendar-aligned with the
+            # omega[t]-based moments above.
+            model_val = params.g_n_preTP if t == 0 else params.g_n[t - 1]
+        else:
+            model_val = np.nan
+
+        computed[target_desc] = (data_val, model_val)
+
+    # Build the grouped table; skip any group with no matching moments
+    all_grouped = {m for _, moments in MOMENT_GROUPS for m in moments}
+    table_dict = {"Moment": [], "Data": [], "Model": []}
+
+    for group_name, group_moments in MOMENT_GROUPS:
+        group_entries = [m for m in group_moments if m in computed]
+        if not group_entries:
+            continue
+        # Group header row (no data values)
+        table_dict["Moment"].append(group_name)
+        table_dict["Data"].append(np.nan)
+        table_dict["Model"].append(np.nan)
+        # Indented moment rows
+        for m in group_entries:
+            data_val, model_val = computed[m]
+            table_dict["Moment"].append(f"  {m}")
+            table_dict["Data"].append(data_val)
+            table_dict["Model"].append(model_val)
+
+    # Append any moments not belonging to a known group
+    for target_desc, (data_val, model_val) in computed.items():
+        if target_desc not in all_grouped:
+            table_dict["Moment"].append(target_desc)
+            table_dict["Data"].append(data_val)
+            table_dict["Model"].append(model_val)
+
+    table_df = pd.DataFrame.from_dict(table_dict)
+    table = save_return_table(table_df, table_format, path, precision=4)
 
     return table

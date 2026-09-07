@@ -36,10 +36,29 @@ def test_compute_default_params():
     assert specs.alpha_G[10] == 1
 
 
+def test_alpha_FA_extended_over_time_path():
+    # alpha_FA is a GDP-share fiscal parameter that may vary over the time
+    # path, so it should be extrapolated to length T+S with the last value
+    # carried forward (like alpha_G/alpha_T/alpha_I).  A multi-element path
+    # previously stayed short and broke the TPI fiscal calculations when
+    # broadcast against Y[:T].
+    specs = Specifications()
+    specs.alpha_FA = np.array([0.01, 0.02, 0.03])
+    specs.compute_default_params()
+    assert specs.alpha_FA.shape[0] == specs.T + specs.S
+    assert specs.alpha_FA[0] == 0.01
+    assert specs.alpha_FA[2] == 0.03
+    # periods beyond the entered path take the last value entered
+    assert specs.alpha_FA[specs.T] == 0.03
+    assert specs.alpha_FA[-1] == 0.03
+
+
+rho_array = np.zeros((4, 3, 7))
+rho_array[:, -1, :] = 1.0
 param_updates1 = {
     "T": 4,
     "S": 3,
-    "rho": [[0.0, 0.0, 1.0]],
+    "rho": rho_array.tolist(),
     "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "ubi_nom_1864": 1200,
@@ -50,7 +69,7 @@ expected1 = np.ones((7, 3, 7)) * 2180
 param_updates2 = {
     "T": 4,
     "S": 3,
-    "rho": [[0.0, 0.0, 1.0]],
+    "rho": rho_array.tolist(),
     "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "ubi_nom_1864": 1200,
@@ -62,7 +81,7 @@ expected2 = np.ones((7, 3, 7)) * 2000
 param_updates3 = {
     "T": 4,
     "S": 3,
-    "rho": [[0.0, 0.0, 1.0]],
+    "rho": rho_array.tolist(),
     "e": np.ones((3, 7)),
     "ubi_nom_017": 1000,
     "ubi_nom_1864": 1200,
@@ -194,3 +213,28 @@ def test_expand_taxfunc_params():
     assert len(specs.etr_params) == specs.T + specs.S
     assert len(specs.etr_params[0]) == specs.S
     assert specs.etr_params[0][0][0] == 0.35
+
+
+def test_J_dimensioned_length_guard():
+    """beta_annual / chi_b must have 1 or J values; see issue #1146.
+
+    Wrong-length vectors used to flow through silently: a short one crashed
+    much later (IndexError deep in the SS solve) and a long one was silently
+    truncated to the first J entries.
+    """
+    # one value broadcasts to all J groups
+    specs = Specifications()
+    specs.update_specifications({"beta_annual": [0.95], "chi_b": [50.0]})
+    assert specs.beta.shape == (specs.J,)
+    assert specs.chi_b.shape == (specs.J,)
+    assert np.allclose(specs.chi_b, 50.0)
+
+    # a uniform vector of the wrong length is reshaped losslessly
+    specs2 = Specifications()
+    specs2.update_specifications({"beta_annual": [0.96, 0.96, 0.96]})
+    assert specs2.beta.shape == (specs2.J,)
+
+    # a non-uniform vector of the wrong length raises immediately
+    specs3 = Specifications()
+    with pytest.raises(ValueError, match="beta_annual"):
+        specs3.update_specifications({"beta_annual": [0.94, 0.95, 0.96]})

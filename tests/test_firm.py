@@ -25,8 +25,8 @@ K_g3 = np.array([0.0])
 expected3 = np.array([0.592030917])
 # update parameters instance with new values for test
 p4 = Specifications()
-rho_vec = np.zeros((1, 3))
-rho_vec[0, -1] = 1.0
+rho_vec = np.zeros((1, 3, p4.J))
+rho_vec[0, -1, :] = 1.0
 new_param_values4 = {
     "Z": [[2.0]],
     "gamma": [0.5],
@@ -1013,7 +1013,8 @@ expected_dPsidKp1_2 = 0.102296044
 p3 = Specifications()
 p3.psi = 4.0
 p3.g_n_ss = 0.0
-p3.g_n = np.array([-0.01, 0.02, 0.03, 0.0])
+p3.g_n = np.array([0.02, 0.03, 0.0])
+p3.g_n_preTP = -0.01
 p3.T = 3
 p3.g_y = 0.04
 p3.delta = 0.05

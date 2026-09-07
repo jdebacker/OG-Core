@@ -89,14 +89,25 @@ def plot_mort_rates(
     for y in years:
         t = y - p0.start_year
         for i, p in enumerate(p_list):
+            # get average mortality rate across all j types if 3D array
+            if p.rho.ndim == 3:
+                # average over all j types
+                if p.omega.ndim == 3:
+                    rho_t = (p.rho[t, :, :] * p.omega[t, :, :]).sum(axis=-1)
+                else:
+                    rho_t = (
+                        p.rho[t, :, :] * p.lambdas.reshape(1, 1, p.J)
+                    ).sum(axis=-1)
+            else:
+                rho_t = p.rho[t, :]
             if survival_rates:
                 plt.plot(
                     age_per,
-                    np.cumprod(1 - p.rho[t, :]),
+                    np.cumprod(1 - rho_t),
                     label=labels[i] + " " + str(y),
                 )
             else:
-                plt.plot(age_per, p.rho[t, :], label=labels[i] + " " + str(y))
+                plt.plot(age_per, rho_t, label=labels[i] + " " + str(y))
     plt.xlabel(r"Age $s$ (model periods)")
     if survival_rates:
         plt.ylabel(r"Cumulative Survival Rates")
@@ -147,7 +158,13 @@ def plot_pop_growth(
     year_vec = np.arange(start_year, start_year + num_years_to_plot)
     start_index = start_year - p.start_year
     fig, ax = plt.subplots()
-    plt.plot(year_vec, p.g_n[start_index : start_index + num_years_to_plot])
+    # g_n stores the pre-time-path boundary growth separately in
+    # g_n_preTP; prepend it to recover the year-aligned growth path.
+    g_n_full = np.append(p.g_n_preTP, p.g_n)
+    plt.plot(
+        year_vec,
+        g_n_full[start_index : start_index + num_years_to_plot],
+    )
     plt.xlabel(r"Year $t$")
     plt.ylabel(r"Population Growth Rate $g_{n, t}$")
     ticks_loc = ax.get_yticks().tolist()
@@ -500,7 +517,11 @@ def plot_g_n(p_list, label_list=[""], include_title=False, path=None):
     years = np.arange(p0.start_year, p0.start_year + p0.T)
     fig, ax = plt.subplots()
     for i, p in enumerate(p_list):
-        plt.plot(years, p.g_n[: p.T], label=label_list[i])
+        plt.plot(
+            years,
+            np.append(p.g_n_preTP, p.g_n[: p.T - 1]),
+            label=label_list[i],
+        )
     plt.xlabel(r"Year $s$ (model periods)")
     plt.ylabel(r"Population Growth Rate $g_{n,t}$")
     if label_list[0] != "":

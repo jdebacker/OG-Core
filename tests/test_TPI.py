@@ -9,6 +9,7 @@ module contains the following tests:
     - test_run_TPI_full_run(), 11 parameterizations, local only
     - test_run_TPI(), 2 parameterizations, local only
     - test_run_TPI_extra(), 8 parameterizations, local only
+    - test_run_TPI_serial_no_client(), 1 parameterization
 """
 
 import multiprocessing
@@ -19,7 +20,7 @@ import numpy as np
 import os
 import sys
 import json
-from ogcore import SS, TPI, utils
+from ogcore import SS, TPI, utils, solvers
 from ogcore.parameters import Specifications
 
 NUM_WORKERS = min(multiprocessing.cpu_count(), 4)
@@ -258,6 +259,18 @@ def test_get_initial_SS_values(baseline, param_updates, filename, tmpdir):
         )
 
 
+def test_rc_error_message():
+    """The resource-constraint failure message names the largest violation,
+    the period it occurs in, and the tolerance."""
+    T, M = 320, 2
+    RC_error = np.full((T, M), 1e-8)
+    RC_error[T - 1, 1] = -0.05  # a terminal-boundary spike (signed)
+    msg = TPI._rc_error_message(RC_error, 1e-4)
+    assert "5.00e-02" in msg  # the max absolute error, reported
+    assert f"period {T - 1}" in msg  # the period it occurs in
+    assert "1e-04" in msg or "0.0001" in msg  # the tolerance
+
+
 def test_firstdoughnutring():
     # Test TPI.firstdoughnutring function.  Provide inputs to function and
     # ensure that output returned matches what it has been before.
@@ -290,6 +303,86 @@ def test_firstdoughnutring():
     )
 
     assert np.allclose(np.array(test_list), np.array(expected_list))
+
+
+def test_tpi_outer_method_default_is_picard():
+    # The pluggable outer method defaults to picard -> no accelerator, so the
+    # solve path (and golden outputs) is unchanged.
+    p = Specifications()
+    assert p.TPI_outer_method == "picard"
+    assert solvers.make_outer_updater(p.TPI_outer_method, p) is None
+
+
+def test_make_outer_updater():
+    # picard -> None (native damped path); anderson -> an AndersonAccelerator
+    # configured from the p.TPI_anderson_* params; unknown -> ValueError.
+    p = Specifications()
+    assert solvers.make_outer_updater("picard", p) is None
+    u = solvers.make_outer_updater("anderson", p)
+    assert isinstance(u, solvers.AndersonAccelerator)
+    assert u.m == p.TPI_anderson_m
+    assert u.beta == p.TPI_anderson_beta
+    with pytest.raises(ValueError):
+        solvers.make_outer_updater("not-a-method", p)
+
+
+def test_anderson_accelerator_beats_picard():
+    # On a linear contraction fixed point, Anderson must converge and in far
+    # fewer iterations than plain damped Picard (guards the accelerator math).
+    out = solvers._selftest()
+    assert out["anderson_iters"] < out["picard_iters"]
+    assert out["anderson_iters"] < 20
+
+
+def test_anderson_scaling_and_reset():
+    # The per-element scale makes the first step a damped-Picard step, and
+    # reset() clears the residual history.
+    u = solvers.AndersonAccelerator(m=3, beta=1.0)
+    x = np.array([0.05, 1000.0, -2.0])
+    gx = np.array([0.06, 1010.0, -1.5])
+    x1 = u.update(x, gx)
+    # beta=1 first step returns gx exactly (x + 1*(gx - x)).
+    assert np.allclose(x1, gx)
+    assert len(u._F) == 1
+    u.reset()
+    assert u._F == [] and u._X == []
+
+
+def test_stall_defaults_are_warn_only():
+    # Stall detection defaults: a 50-iteration window and warn-only
+    # action, so model solutions are unchanged.
+    p = Specifications()
+    assert p.TPI_stall_window == 50
+    assert p.TPI_stall_action == "warn"
+
+
+def test_diagnose_stall_progressing_and_disabled():
+    # A steadily improving distance history is never a stall, and a
+    # non-positive window (or too-short history) disables the check.
+    improving = 10.0 * 0.9 ** np.arange(100)
+    assert solvers.diagnose_stall(improving, 100, 20, 0.05) is None
+    stuck = np.full(100, 5.0)
+    assert solvers.diagnose_stall(stuck, 100, 0, 0.05) is None
+    assert solvers.diagnose_stall(stuck, 30, 20, 0.05) is None
+
+
+def test_diagnose_stall_oscillating():
+    # A distance that bounces in a band without improving on the earlier
+    # best is diagnosed as the outer loop cycling.
+    rng = np.arange(100)
+    bouncing = 0.3 + 0.25 * (-1.0) ** rng
+    assert solvers.diagnose_stall(bouncing, 100, 20, 0.05) == "oscillating"
+
+
+def test_diagnose_stall_diverging():
+    # A recent best far above the earlier best is diagnosed as a
+    # diverging economy rather than a cycling solver -- whether the
+    # growth is smooth or a widening bounce.
+    growing = 0.1 * 1.05 ** np.arange(100)
+    assert solvers.diagnose_stall(growing, 100, 20, 0.05) == "diverging"
+    rng = np.arange(100)
+    growing_bounce = 0.05 * 1.1**rng * (1.0 + 0.3 * (-1.0) ** rng)
+    assert solvers.diagnose_stall(growing_bounce, 100, 20, 0.05) == "diverging"
 
 
 file_in1 = os.path.join(
@@ -388,11 +481,45 @@ def test_params_to_array(tax_func_type):
 def test_inner_loop():
     # Test TPI.inner_loop function.  Provide inputs to function and
     # ensure that output returned matches what it has been before.
+    # Explicitly disable use_sparse_FOC_jac so this regression test
+    # continues to exercise the legacy dense-finite-difference path
+    # (the sparse path is covered by test_inner_loop_sparse_FOC_jac).
     input_tuple = utils.safe_read_pickle(
         os.path.join(CUR_PATH, "test_io_data", "tpi_inner_loop_inputs.pkl")
     )
     guesses, outer_loop_vars_old, initial_values, ubi, j, ind = input_tuple
     p = Specifications()
+    p.update_specifications({"use_sparse_FOC_jac": False})
+    r = outer_loop_vars_old[0]
+    r_p = outer_loop_vars_old[2]
+    w = outer_loop_vars_old[1]
+    BQ = outer_loop_vars_old[3]
+    RM = outer_loop_vars_old[4]
+    TR = outer_loop_vars_old[5]
+    theta = outer_loop_vars_old[6]
+    p_m = np.ones((p.T + p.S, p.M))
+    outer_loop_vars = (r_p, r, w, p_m, BQ, RM, TR, theta)
+    test_tuple = TPI.inner_loop(
+        guesses, outer_loop_vars, initial_values, ubi, j, ind, p
+    )
+    expected_tuple = utils.safe_read_pickle(
+        os.path.join(CUR_PATH, "test_io_data", "tpi_inner_loop_outputs.pkl")
+    )
+
+    for i, v in enumerate(expected_tuple):
+        assert np.allclose(test_tuple[i], v)
+
+
+def test_inner_loop_sparse_FOC_jac():
+    # The optional banded (sparse finite-difference) Jacobian, enabled via
+    # use_sparse_FOC_jac, must reproduce the default dense-finite-difference
+    # household solution from test_inner_loop.
+    input_tuple = utils.safe_read_pickle(
+        os.path.join(CUR_PATH, "test_io_data", "tpi_inner_loop_inputs.pkl")
+    )
+    guesses, outer_loop_vars_old, initial_values, ubi, j, ind = input_tuple
+    p = Specifications()
+    p.update_specifications({"use_sparse_FOC_jac": True})
     r = outer_loop_vars_old[0]
     r_p = outer_loop_vars_old[2]
     w = outer_loop_vars_old[1]
@@ -903,6 +1030,18 @@ param_updates10 = {
     "eta": np.ones((40, 1)) * (1 / 40),
     "eta_RM": np.ones((40, 1)) * (1 / 40),
     "replacement_rate_adjust": [[1.0]],
+    # Collapse J dimension from TEST_PARAM_DICT (J=2) to J=1
+    # omega arrays: sum over J (joint distribution marginal)
+    "omega": np.array(TEST_PARAM_DICT["omega"]).sum(-1, keepdims=True),
+    "omega_SS": np.array(TEST_PARAM_DICT["omega_SS"]).sum(-1, keepdims=True),
+    "omega_S_preTP": np.array(TEST_PARAM_DICT["omega_S_preTP"]).sum(
+        -1, keepdims=True
+    ),
+    # rho/imm_rates: same across J, so just take first slice
+    "rho": np.array(TEST_PARAM_DICT["rho"])[:, :, 0:1],
+    "rho_preTP": np.array(TEST_PARAM_DICT["rho_preTP"])[:, 0:1],
+    "imm_rates": np.array(TEST_PARAM_DICT["imm_rates"])[:, :, 0:1],
+    "imm_rates_preTP": np.array(TEST_PARAM_DICT["imm_rates_preTP"])[:, 0:1],
 }
 filename10 = os.path.join(CUR_PATH, "test_io_data", "run_TPI_outputs_J1.pkl")
 # read in mono tax funcs (not age specific)
@@ -1080,3 +1219,49 @@ def test_run_TPI_extra(baseline, param_updates, filename, tmpdir, dask_client):
                 rtol=1e-04,
                 atol=1e-04,
             )
+
+
+class _ReachedTPILoop(Exception):
+    """Sentinel raised in place of the household inner loop."""
+
+
+def test_run_TPI_serial_no_client(tmpdir, monkeypatch):
+    """
+    Regression test: TPI.run_TPI(p, client=None) must reach the TPI loop.
+
+    run_TPI used to call ``client.scatter(p, broadcast=True)``
+    unconditionally, so passing ``client=None`` raised an
+    ``AttributeError`` before the TPI loop was ever entered, making the
+    serial fallback inside the loop unreachable.  This test does not
+    solve a transition path: it seeds the baseline SS results from the
+    cached pickles in ``test_io_data`` and monkeypatches
+    ``TPI.inner_loop`` to raise a sentinel, so it asserts only that
+    execution gets as far as the first serial household solve.
+    """
+    # Seed cached baseline SS results so no SS solve is needed
+    old_baseline_dir = os.path.join(CUR_PATH, "test_io_data", "OUTPUT2")
+    ss_vars = utils.safe_read_pickle(
+        os.path.join(old_baseline_dir, "SS", "SS_vars.pkl")
+    )
+    ss_vars_new = {SS_VAR_NAME_MAPPING[k]: v for k, v in ss_vars.items()}
+    baseline_dir = os.path.join(tmpdir, "baseline")
+    utils.mkdirs(os.path.join(baseline_dir, "SS"))
+    with open(os.path.join(baseline_dir, "SS", "SS_vars.pkl"), "wb") as f:
+        pickle.dump(ss_vars_new, f)
+
+    p = Specifications(
+        baseline=True,
+        baseline_dir=baseline_dir,
+        output_base=baseline_dir,
+        num_workers=1,
+    )
+    p.update_specifications(TEST_PARAM_DICT.copy())
+    p.maxiter = 1
+
+    def mock_inner_loop(*args, **kwargs):
+        raise _ReachedTPILoop()
+
+    monkeypatch.setattr(TPI, "inner_loop", mock_inner_loop)
+
+    with pytest.raises(_ReachedTPILoop):
+        TPI.run_TPI(p, client=None)

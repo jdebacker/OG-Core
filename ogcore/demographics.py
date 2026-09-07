@@ -8,6 +8,12 @@ abbreviations is available at https://unstats.un.org/unsd/methodology/m49/
 
 # Import packages
 import os
+import sys
+import argparse
+import base64
+import datetime
+import getpass
+import json
 import numpy as np
 from io import StringIO
 import scipy.optimize as opt
@@ -18,6 +24,15 @@ from ogcore import parameter_plots as pp
 START_YEAR = 2024
 END_YEAR = 2024
 UN_COUNTRY_CODE = "840"  # UN code for USA
+UN_TOKEN_FILENAME = "un_api_token.txt"
+UN_TOKEN_URL = "https://population.un.org/dataportalapi/index.html"
+UN_DATA_ARCHIVE_URL = "https://github.com/EAPD-DRB/Population-Data"
+# Warn only once per session about a token found in the working directory
+_WARNED_LEGACY_UN_TOKEN = False
+# Say how to register a token only once per session, not on every request
+_HINTED_NO_UN_TOKEN = False
+# Say a token has expired only once per session
+_WARNED_EXPIRED_UN_TOKEN = False
 # create output director for figures
 CUR_PATH = os.path.split(os.path.abspath(__file__))[0]
 OUTPUT_DIR = os.path.join(CUR_PATH, "..", "data", "OUTPUT", "Demographics")
@@ -32,11 +47,379 @@ Define functions
 """
 
 
+def un_token_path():
+    """
+    This function returns the path of the per-user file that holds the UN
+    Data Portal API token. The location follows the platform convention
+    for user configuration files: ``$XDG_CONFIG_HOME`` (or ``~/.config``
+    when that is unset) on macOS and Linux, and ``%APPDATA%`` on Windows.
+
+    Returns:
+        path (str): full path to the user's UN API token file
+    """
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
+
+    return os.path.join(base, "og", UN_TOKEN_FILENAME)
+
+
+def _clean_un_token(un_token):
+    """
+    This function normalizes a UN Data Portal API token by removing
+    surrounding whitespace and any leading "Bearer " prefix, so that the
+    request header is not doubled into "Bearer Bearer <token>".
+
+    Args:
+        un_token (str): raw token, may be None
+
+    Returns:
+        un_token (str): normalized token, empty string if none was given
+    """
+    un_token = (un_token or "").strip()
+    if un_token.lower().startswith("bearer "):
+        un_token = un_token[len("bearer ") :].strip()
+
+    return un_token
+
+
+def un_token_expiry(un_token):
+    """
+    This function reads the expiry date out of a UN Data Portal API token.
+    The portal issues JSON Web Tokens, whose middle segment carries an
+    ``exp`` claim, so the date can be read without a network call. The
+    signature is not checked and is not needed here: the portal remains
+    the authority on whether a token is accepted, and this is only used to
+    tell a user that renewing is due.
+
+    Args:
+        un_token (str): token to inspect
+
+    Returns:
+        expiry (datetime.date): expiry date, or None when the token is not
+            a readable JSON Web Token
+    """
+    try:
+        payload = un_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+
+        return datetime.datetime.fromtimestamp(
+            claims["exp"], datetime.timezone.utc
+        ).date()
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return None  # opaque token, or a format we do not recognize
+
+
+def _utc_today():
+    """Today's date in UTC, to compare against a token's expiry claim."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def _warn_if_un_token_expired(un_token):
+    """
+    This function says, once per session, that a token has expired. An
+    expired token otherwise fails in the same silent-looking way as a
+    missing one: the request is refused and the caller quietly falls back
+    to the archived data.
+
+    Args:
+        un_token (str): the token that was resolved
+
+    Returns:
+        None
+    """
+    global _WARNED_EXPIRED_UN_TOKEN
+    if _WARNED_EXPIRED_UN_TOKEN:
+        return
+    expiry = un_token_expiry(un_token)
+    if expiry is None or expiry >= _utc_today():
+        return
+    _WARNED_EXPIRED_UN_TOKEN = True
+
+    lines = [
+        f"Your UN API token expired on {expiry}, so the archived data "
+        "will be used.",
+        f"  Get a new one at {UN_TOKEN_URL}",
+    ]
+    command = og_token_command()
+    if command:
+        lines.append(f"  Then run: {command} set")
+    else:
+        lines.append(f"  Then save it to {un_token_path()}")
+    print("\n".join(lines))
+
+
+def og_token_command():
+    """
+    This function returns the full path of the ``og-token`` command that
+    belongs to the running interpreter, so that a message can tell the
+    user exactly what to type. The command is installed beside the
+    interpreter and is usually not on the shell's PATH, because OG-Core is
+    normally run from a project virtual environment.
+
+    Returns:
+        command (str): full path to og-token, or None when it is not
+            installed alongside this interpreter
+    """
+    name = "og-token.exe" if os.name == "nt" else "og-token"
+    command = os.path.join(os.path.dirname(sys.executable), name)
+
+    return command if os.path.exists(command) else None
+
+
+def _hint_how_to_register_token():
+    """
+    This function prints, once per session, how to register a token. It
+    runs whenever a request falls back to the archived data, so a user who
+    obtains a token later is told what to do without being prompted again
+    on every run.
+    """
+    global _HINTED_NO_UN_TOKEN
+    if _HINTED_NO_UN_TOKEN:
+        return
+    _HINTED_NO_UN_TOKEN = True
+
+    lines = [
+        "No UN API token registered, so the archived data will be used.",
+        f"  Get a free token at {UN_TOKEN_URL}",
+    ]
+    command = og_token_command()
+    if command:
+        lines.append(f"  Then run: {command} set")
+        lines.append(f"  (or save the token to {un_token_path()})")
+    else:
+        lines.append(f"  Then save the token to {un_token_path()}")
+    print("\n".join(lines))
+
+
+def resolve_un_token(un_token=None):
+    """
+    This function finds the UN Data Portal API token to use for a
+    request. Sources are tried in order and the first one that is present
+    wins:
+
+    1. the ``un_token`` argument
+    2. the ``UN_API_TOKEN`` environment variable
+    3. the per-user file at :func:`un_token_path`
+    4. ``un_api_token.txt`` in the current working directory (deprecated)
+
+    When no source holds a token the user is asked for one and the answer
+    is saved to the per-user file, so a token is entered once per machine
+    rather than once per directory. The prompt is skipped when standard
+    input is not interactive, in which case an empty token is returned and
+    the caller falls back to the Population-Data archive.
+
+    Args:
+        un_token (str): token supplied by the caller, overrides all other
+            sources
+
+    Returns:
+        un_token (str): normalized token, empty string if none was found
+    """
+    un_token = _find_un_token(un_token)
+    if un_token:
+        _warn_if_un_token_expired(un_token)
+    else:
+        _hint_how_to_register_token()
+
+    return un_token
+
+
+def _find_un_token(un_token=None):
+    """
+    This function does the source-by-source lookup described in
+    :func:`resolve_un_token`, which wraps it to add the one-time hint when
+    nothing is found.
+
+    Args:
+        un_token (str): token supplied by the caller
+
+    Returns:
+        un_token (str): normalized token, empty string if none was found
+    """
+    global _WARNED_LEGACY_UN_TOKEN
+
+    if un_token:
+        return _clean_un_token(un_token)
+
+    # .strip() so a variable set to blank space falls through to the files
+    # rather than silently resolving to no token at all.
+    if os.environ.get("UN_API_TOKEN", "").strip():
+        return _clean_un_token(os.environ["UN_API_TOKEN"])
+
+    # An existing per-user file is authoritative even when empty, so that
+    # a user who declined the prompt is not asked again on every call.
+    user_path = un_token_path()
+    if os.path.exists(user_path):
+        with open(user_path, "r") as file:
+            return _clean_un_token(file.read())
+
+    if os.path.exists(UN_TOKEN_FILENAME):
+        if not _WARNED_LEGACY_UN_TOKEN:
+            print(
+                f"Using the UN API token in {UN_TOKEN_FILENAME} in the "
+                "current directory. This location is deprecated because it "
+                "leaves a copy of the token in every directory you run "
+                f"from. Move it to {user_path} to keep one token per user."
+            )
+            _WARNED_LEGACY_UN_TOKEN = True
+        with open(UN_TOKEN_FILENAME, "r") as file:
+            return _clean_un_token(file.read())
+
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return ""  # not interactive, e.g. a scheduled run
+        print(
+            "\nOG-Core can read population data directly from the UN Data "
+            "Portal, which needs a free API token.\n"
+            f"  To get one, open {UN_TOKEN_URL} and click Generate Token.\n"
+            "  Or press return to use the archived copy of the same data "
+            f"at {UN_DATA_ARCHIVE_URL}.\n"
+        )
+        # getpass rather than input so the token is not echoed into the
+        # terminal and its scrollback.
+        un_token = getpass.getpass("UN API token (input is hidden): ")
+    except (EOFError, ValueError):  # stdin at end of file or closed
+        return ""
+
+    # Save the answer, empty or not, so the question is asked only once.
+    try:
+        os.makedirs(os.path.dirname(user_path), exist_ok=True)
+        with open(user_path, "w") as file:
+            file.write(un_token)
+    except OSError as err:  # e.g. a read-only home directory
+        print(
+            f"Could not save the UN API token to {user_path} ({err}). "
+            "It will be used for this session only."
+        )
+    else:
+        try:
+            os.chmod(user_path, 0o600)
+        except OSError:  # permissions are not settable on every platform
+            pass
+        if _clean_un_token(un_token):
+            print(f"Token saved to {user_path}")
+
+    return _clean_un_token(un_token)
+
+
+def un_token_cli(argv=None):
+    """
+    This function is the command line entry point for managing the stored
+    UN Data Portal API token. It is installed as ``og-token`` and takes one
+    of three actions: ``set`` saves a token to the per-user file, ``show``
+    reports where the token lives and which source would be used, and
+    ``rm`` deletes the stored token.
+
+    Args:
+        argv (list): command line arguments, read from sys.argv when not
+            given
+
+    Returns:
+        status (int): process exit status, 0 on success
+    """
+    parser = argparse.ArgumentParser(
+        prog="og-token",
+        description=(
+            "Manage the UN Data Portal API token used by OG-Core. Get a "
+            f"free token from {UN_TOKEN_URL} (click Generate Token). "
+            "Without one, OG-Core reads the archived copy of the same data "
+            f"from {UN_DATA_ARCHIVE_URL}."
+        ),
+    )
+    parser.add_argument(
+        "action",
+        choices=["set", "show", "rm"],
+        help="save a token, report where it lives, or delete it",
+    )
+    args = parser.parse_args(argv)
+    path = un_token_path()
+
+    if args.action == "set":
+        print(f"Get a free token at {UN_TOKEN_URL} (click Generate Token).")
+        try:
+            un_token = _clean_un_token(getpass.getpass("UN API token: "))
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled. Nothing was saved.")
+            return 1
+        if not un_token:
+            print("No token entered. Nothing was saved.")
+            return 1
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as file:
+                file.write(un_token)
+        except OSError as err:
+            print(f"Could not write {path} ({err}).")
+            return 1
+        try:
+            os.chmod(path, 0o600)
+        except OSError:  # permissions are not settable on every platform
+            pass
+        expiry = un_token_expiry(un_token)
+        if expiry is None:
+            print(f"Token saved to {path}")
+        elif expiry < _utc_today():
+            print(f"Token saved to {path}, but it expired on {expiry}.")
+            print(f"Get a current one at {UN_TOKEN_URL}")
+        else:
+            print(f"Token saved to {path}, valid until {expiry}")
+        return 0
+
+    if args.action == "rm":
+        if not os.path.exists(path):
+            print(f"No token stored at {path}")
+            return 1
+        try:
+            os.remove(path)
+        except OSError as err:
+            print(f"Could not remove {path} ({err}).")
+            return 1
+        print(f"Removed {path}")
+        return 0
+
+    # show
+    print(f"Token file: {path}")
+    if os.path.exists(path):
+        with open(path, "r") as file:
+            stored = _clean_un_token(file.read())
+        if not stored:
+            print("  present but empty, so no token is sent")
+        else:
+            expiry = un_token_expiry(stored)
+            if expiry is None:
+                print("  a token is stored")
+            elif expiry < _utc_today():
+                print(f"  a token is stored, but it expired on {expiry}")
+                print(f"  get a new one at {UN_TOKEN_URL}")
+            else:
+                days = (expiry - _utc_today()).days
+                print(
+                    f"  a token is stored, valid until {expiry} ({days} days)"
+                )
+    else:
+        print("  not set, run 'og-token set'")
+    if os.environ.get("UN_API_TOKEN", "").strip():
+        print("UN_API_TOKEN is set and takes precedence over the file.")
+    if os.path.exists(UN_TOKEN_FILENAME):
+        print(
+            f"A deprecated {UN_TOKEN_FILENAME} is in this directory. It is "
+            "only used when neither of the above is set."
+        )
+
+    return 0
+
+
 def get_un_data(
     variable_code,
     country_id=UN_COUNTRY_CODE,
     start_year=START_YEAR,
     end_year=END_YEAR,
+    un_token=None,
 ):
     """
     This function retrieves data from the United Nations Data Portal API
@@ -48,6 +431,8 @@ def get_un_data(
         country_id (str): country id for UN data
         start_year (int): start year for UN data
         end_year (int): end year for UN data
+        un_token (str): UN Data Portal API token, resolved from the
+            environment or the user's token file when not given
 
     Returns:
         df (Pandas DataFrame): DataFrame of UN data
@@ -64,25 +449,9 @@ def get_un_data(
         + "?format=csv"
     )
 
-    # Check for a file named "un_api_token.txt" in the current directory
-    if os.path.exists(os.path.join("un_api_token.txt")):
-        with open(os.path.join("un_api_token.txt"), "r") as file:
-            UN_TOKEN = file.read().strip()
-    else:  # if file not exist, prompt user for token
-        try:
-            UN_TOKEN = input(
-                "Please enter your UN API token "
-                "(press return if you do not have one): "
-            )
-            # write the UN_TOKEN to a file to find in the future
-            with open(os.path.join("un_api_token.txt"), "w") as file:
-                file.write(UN_TOKEN)
-        except EOFError:
-            UN_TOKEN = ""
-
     # get data from url
     payload = {}
-    headers = {"Authorization": "Bearer " + UN_TOKEN}
+    headers = {"Authorization": "Bearer " + resolve_un_token(un_token)}
     response = get_legacy_session().get(target, headers=headers, data=payload)
     # Check if the request was successful before processing
     if response.status_code == 200:
@@ -97,7 +466,12 @@ def get_un_data(
             axis=1,
             inplace=True,
         )
-        df.loc[df.age == "100+", "age"] = 100
+        # The "100+" top age bin appears only in some series (mortality,
+        # population), so the age column may parse as int (no "100+") or
+        # str. Normalize to str so the replacement works under pandas
+        # >=3.0's strict string dtype, then cast the column to int.
+        df.age = df.age.astype(str)
+        df.loc[df.age == "100+", "age"] = "100"
         df.age = df.age.astype(int)
         df.year = df.year.astype(int)
         df = df[df.age < 100]  # need to drop 100+ age category
@@ -120,6 +494,8 @@ def get_un_data(
             "076": "BRA",
             "410": "KOR",
             "231": "ETH",
+            "392": "JPN",
+            "242": "FJI",
         }
         un_variable_dict = {
             "68": "fertility_rates",
@@ -343,7 +719,6 @@ def get_pop(
     infmort_rates=None,
     imm_rates=None,
     initial_pop=None,
-    pre_pop_dist=None,
     country_id=UN_COUNTRY_CODE,
     start_year=START_YEAR,
     end_year=END_YEAR,
@@ -372,8 +747,6 @@ def get_pop(
             and model age
         initial_pop_data (Pandas DataFrame): initial population data
             for the first year of model calibration (start_year)
-        pre_pop_dist (Numpy array): population distribution for the year
-            before the initial year for calibration
         country_id (str): country id for UN data
         start_year (int): start year data
         end_year (int): end year for data
@@ -381,33 +754,11 @@ def get_pop(
 
     Returns:
         pop_2D (Numpy array): population distribution over T0 periods
-        pre_pop (Numpy array): population distribution one year before
-            initial year for calibration of omega_S_preTP
     """
     # Generate time path of the nonstationary population distribution
     # Get path up to end of data year
     pop_2D = np.zeros((end_year + 2 - start_year, E + S))
     if infer_pop:
-        if pre_pop_dist is None:
-            pre_pop_data = get_un_data(
-                "47",
-                country_id=country_id,
-                start_year=start_year - 1,
-                end_year=start_year - 1,
-            )
-            if download_path:
-                pre_pop_data.to_csv(
-                    os.path.join(download_path, "raw_pre_pop_data_UN.csv"),
-                    index=False,
-                )
-            pre_pop_sample = pre_pop_data[
-                (pre_pop_data["age"] >= min_age)
-                & (pre_pop_data["age"] <= max_age)
-            ]
-            pre_pop = pre_pop_sample.value.values
-            pre_pop_dist = pop_rebin(pre_pop, E + S)
-        else:
-            pre_pop = pre_pop_dist
         if initial_pop is None:
             initial_pop_data = get_un_data(
                 "47",
@@ -463,22 +814,8 @@ def get_pop(
             pop = pop_data_sample.value.values
             # Generate the current population distribution given that E+S might
             # be less than max_age-min_age+1
-            # age_per_EpS = np.arange(1, E + S + 1)
             pop_EpS = pop_rebin(pop, E + S)
             pop_2D[y - start_year, :] = pop_EpS
-
-        # get population distribution one year before initial year for
-        # calibration of omega_S_preTP
-        pre_pop_data = get_un_data(
-            "47",
-            country_id=country_id,
-            start_year=start_year - 1,
-            end_year=start_year - 1,
-        )
-        pre_pop_sample = pre_pop_data[
-            (pre_pop_data["age"] >= min_age) & (pre_pop_data["age"] <= max_age)
-        ]
-        pre_pop = pre_pop_sample.value.values
 
     if download_path:
         np.savetxt(
@@ -486,15 +823,8 @@ def get_pop(
             pop_2D,
             delimiter=",",
         )
-        np.savetxt(
-            os.path.join(
-                download_path, "pre_period_population_distribution.csv"
-            ),
-            pre_pop,
-            delimiter=",",
-        )
 
-    return pop_2D, pre_pop
+    return pop_2D
 
 
 def pop_rebin(curr_pop_dist, totpers_new):
@@ -708,6 +1038,423 @@ def immsolve(imm_rates, *args):
     return omega_errs
 
 
+def _logistic(x):
+    """
+    Numerically stable logistic transform.
+    """
+    return 1 / (1 + np.exp(-np.clip(x, -700, 700)))
+
+
+def _income_shares_and_midpoints(income_percentiles):
+    """
+    Convert income group population shares into centered percentile midpoints.
+    """
+    income_shares = np.asarray(income_percentiles, dtype=float).ravel()
+    if income_shares.ndim != 1 or income_shares.size < 1:
+        raise ValueError("income_percentiles must be a one-dimensional array.")
+    if np.any(income_shares <= 0):
+        raise ValueError("income_percentiles must contain positive values.")
+    income_shares = income_shares / income_shares.sum()
+    percentile_midpoints = (
+        100 * (np.cumsum(income_shares) - 0.5 * income_shares) - 50
+    )
+    return income_shares, percentile_midpoints
+
+
+def _extend_time_path(arr, num_periods):
+    """
+    Extend or trim the first dimension of an array to num_periods.
+    """
+    if arr.shape[0] == num_periods:
+        return arr
+    if arr.shape[0] > num_periods:
+        return arr[:num_periods]
+    extension = np.repeat(arr[-1:, ...], num_periods - arr.shape[0], axis=0)
+    return np.concatenate((arr, extension), axis=0)
+
+
+def _format_age_gradient(gradient, num_periods, E, S, name):
+    """
+    Put an age gradient into a num_periods x (E+S) array.
+
+    A length-S vector is interpreted as applying to economically active ages
+    only, with zero gradients for younger ages.
+    """
+    totpers = E + S
+    if gradient is None:
+        return np.zeros((num_periods, totpers))
+
+    gradient = np.asarray(gradient, dtype=float)
+    if gradient.ndim == 0:
+        return np.full((num_periods, totpers), gradient)
+
+    if gradient.ndim == 1:
+        if gradient.shape[0] == 1:
+            full_gradient = np.full(totpers, gradient.item())
+        elif gradient.shape[0] == S:
+            full_gradient = np.concatenate((np.zeros(E), gradient))
+        elif gradient.shape[0] == totpers:
+            full_gradient = gradient
+        else:
+            raise ValueError(
+                f"{name} must have length 1, S={S}, or E+S={totpers}."
+            )
+        return np.tile(full_gradient.reshape(1, totpers), (num_periods, 1))
+
+    if gradient.ndim == 2:
+        if gradient.shape[1] == S:
+            gradient = np.concatenate(
+                (np.zeros((gradient.shape[0], E)), gradient), axis=1
+            )
+        elif gradient.shape[1] != totpers:
+            raise ValueError(
+                f"{name} must have second dimension S={S} or E+S={totpers}."
+            )
+        return _extend_time_path(gradient, num_periods)
+
+    raise ValueError(f"{name} must be a scalar, vector, or 2D array.")
+
+
+def _format_infmort_gradient(gradient, num_periods):
+    """
+    Put an infant mortality gradient into a num_periods vector.
+    """
+    if gradient is None:
+        return np.zeros(num_periods)
+
+    gradient = np.asarray(gradient, dtype=float)
+    if gradient.ndim == 0:
+        return np.full(num_periods, gradient)
+    if gradient.ndim == 1:
+        if gradient.shape[0] == 1:
+            return np.full(num_periods, gradient.item())
+        return _extend_time_path(gradient.reshape(-1, 1), num_periods).ravel()
+
+    raise ValueError("infmort_gradient must be a scalar or vector.")
+
+
+def _format_imm_shares(imm_pctiles, num_periods, E, S, income_shares):
+    """
+    Format immigrant income shares as num_periods x (E+S) x J.
+    """
+    totpers = E + S
+    J = income_shares.shape[0]
+    if imm_pctiles is None:
+        return np.tile(
+            income_shares.reshape(1, 1, J), (num_periods, totpers, 1)
+        )
+
+    imm_shares = np.asarray(imm_pctiles, dtype=float)
+    if imm_shares.ndim == 1:
+        if imm_shares.shape[0] != J:
+            raise ValueError(f"imm_pctiles must have J={J} elements.")
+        imm_shares = np.tile(
+            imm_shares.reshape(1, 1, J), (num_periods, totpers, 1)
+        )
+    elif imm_shares.ndim == 2:
+        if imm_shares.shape[-1] != J:
+            raise ValueError(f"imm_pctiles last dimension must be J={J}.")
+        if imm_shares.shape[0] == S:
+            young_shares = np.tile(income_shares.reshape(1, J), (E, 1))
+            imm_shares = np.concatenate((young_shares, imm_shares), axis=0)
+        elif imm_shares.shape[0] != totpers:
+            raise ValueError(
+                f"imm_pctiles first dimension must be S={S} or E+S={totpers}."
+            )
+        imm_shares = np.tile(
+            imm_shares.reshape(1, totpers, J), (num_periods, 1, 1)
+        )
+    elif imm_shares.ndim == 3:
+        if imm_shares.shape[-1] != J:
+            raise ValueError(f"imm_pctiles last dimension must be J={J}.")
+        if imm_shares.shape[1] == S:
+            young_shares = np.tile(
+                income_shares.reshape(1, 1, J), (imm_shares.shape[0], E, 1)
+            )
+            imm_shares = np.concatenate((young_shares, imm_shares), axis=1)
+        elif imm_shares.shape[1] != totpers:
+            raise ValueError(
+                f"imm_pctiles second dimension must be S={S} or E+S={totpers}."
+            )
+        imm_shares = _extend_time_path(imm_shares, num_periods)
+    else:
+        raise ValueError(
+            "imm_pctiles must be a vector, 2D array, or 3D array."
+        )
+
+    if np.any(imm_shares < 0):
+        raise ValueError("imm_pctiles must be nonnegative.")
+    denom = imm_shares.sum(axis=-1, keepdims=True)
+    if np.any(denom <= 0):
+        raise ValueError("imm_pctiles must sum to a positive value across J.")
+    return imm_shares / denom
+
+
+def _within_age_weights(pop_by_age_j, income_shares):
+    """
+    Compute J weights within each age, using income_shares if an age is empty.
+    """
+    age_totals = pop_by_age_j.sum(axis=-1, keepdims=True)
+    default_weights = np.tile(
+        income_shares.reshape(1, income_shares.shape[0]),
+        (pop_by_age_j.shape[0], 1),
+    )
+    return np.divide(
+        pop_by_age_j,
+        age_totals,
+        out=default_weights,
+        where=age_totals > 0,
+    )
+
+
+def _mean_preserving_logit_rates(mean_rates, slopes, weights, pct_midpoints):
+    """
+    Create J-specific rates bounded in [0, 1] with weighted mean mean_rates.
+    """
+    mean_rates = np.asarray(mean_rates, dtype=float)
+    slopes = np.asarray(slopes, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    rates = np.zeros(weights.shape)
+
+    for idx in np.ndindex(mean_rates.shape):
+        mean_rate = mean_rates[idx]
+        slope = slopes[idx]
+        w = weights[idx]
+        w = w / w.sum()
+
+        if mean_rate <= 0:
+            rates[idx] = 0.0
+        elif mean_rate >= 1:
+            rates[idx] = 1.0
+        elif np.isclose(slope, 0.0):
+            rates[idx] = mean_rate
+        else:
+
+            def mean_error(intercept):
+                return (
+                    np.dot(w, _logistic(intercept + slope * pct_midpoints))
+                    - mean_rate
+                )
+
+            intercept = opt.brentq(mean_error, -700, 700)
+            rates[idx] = _logistic(intercept + slope * pct_midpoints)
+
+    return rates
+
+
+def expand_pop_obj_J(
+    omega_path_lev,
+    omega_path_S,
+    omega_SSfx,
+    fert_rates,
+    mort_rates,
+    infmort_rates,
+    imm_rates,
+    mort_rates_S,
+    imm_rates_mat,
+    E,
+    S,
+    g_n_SS,
+    fixper,
+    income_percentiles=None,
+    fert_gradient=None,
+    mort_gradient=None,
+    infmort_gradient=None,
+    imm_pctiles=None,
+):
+    """
+    Expand aggregate demographic objects to age x income-group objects.
+
+    The aggregate population path and rates are left unchanged. If
+    income_percentiles is None and no income-specific inputs are
+    provided, the aggregate objects are broadcast across a single
+    income group (J=1). Otherwise, income_percentiles gives the initial
+    population distribution across J for every age and the income
+    shares of newborns in every period.
+
+    Args:
+        omega_path_lev (Numpy array): T+S x E+S aggregate population levels.
+        omega_path_S (Numpy array): T+S x S aggregate active-age population
+            shares.
+        omega_SSfx (Numpy array): fixed full-life population distribution.
+        fert_rates (Numpy array): T+S x E+S fertility rates.
+        mort_rates (Numpy array): T+S x E+S mortality rates.
+        infmort_rates (Numpy array): T+S infant mortality rates.
+        imm_rates (Numpy array): T+S x E+S immigration rates, including the
+            adjusted post-fixper rates.
+        mort_rates_S (Numpy array): T+S x S mortality rates for active ages.
+        imm_rates_mat (Numpy array): T+S x S immigration rates for active ages.
+        E (int): number of non-economically active periods.
+        S (int): number of economically active periods.
+        g_n_SS (float): steady-state population growth rate.
+        fixper (int): period at which the fixed steady-state distribution is
+            imposed.
+        income_percentiles (array_like): population shares for each J
+            group; defaults to a single income group when no
+            income-specific inputs are supplied.
+        fert_gradient (array_like): log-odds fertility slopes by age.
+        mort_gradient (array_like): log-odds mortality slopes by age.
+        infmort_gradient (array_like): log-odds infant mortality slopes.
+        imm_pctiles (array_like): immigrant income shares by period,
+        age, and J.
+
+    Returns:
+        dict: demographic objects with the same keys needed by get_pop_objs.
+    """
+    omega_SS = omega_SSfx[-S:] / omega_SSfx[-S:].sum()
+    income_inputs = (
+        fert_gradient,
+        mort_gradient,
+        infmort_gradient,
+        imm_pctiles,
+    )
+    all_income_inputs_none = all(x is None for x in income_inputs)
+    if income_percentiles is None:
+        assert all_income_inputs_none, (
+            "income_percentiles must be provided when using "
+            + "income-specific inputs."
+        )
+        # No income heterogeneity requested: broadcast the aggregate
+        # objects across a single income group.
+        income_percentiles = [100]
+    income_shares, pct_midpoints = _income_shares_and_midpoints(
+        income_percentiles
+    )
+    J = income_shares.shape[0]
+    num_periods, totpers = omega_path_lev.shape
+    assert totpers == E + S
+
+    if all_income_inputs_none:
+        return {
+            "omega_path_S": omega_path_S.reshape(
+                omega_path_S.shape[0], omega_path_S.shape[1], 1
+            )
+            * income_shares.reshape(1, 1, J),
+            "omega_SS": omega_SS.reshape(omega_SS.shape[0], 1)
+            * income_shares.reshape(1, J),
+            "mort_rates_S": np.tile(
+                mort_rates_S.reshape(
+                    mort_rates_S.shape[0], mort_rates_S.shape[1], 1
+                ),
+                (1, 1, J),
+            ),
+            "imm_rates_mat": np.tile(
+                imm_rates_mat.reshape(
+                    imm_rates_mat.shape[0], imm_rates_mat.shape[1], 1
+                ),
+                (1, 1, J),
+            ),
+        }
+
+    fert_slopes = _format_age_gradient(
+        fert_gradient, num_periods, E, S, "fert_gradient"
+    )
+    mort_slopes = _format_age_gradient(
+        mort_gradient, num_periods, E, S, "mort_gradient"
+    )
+    infmort_slopes = _format_infmort_gradient(infmort_gradient, num_periods)
+    imm_shares = _format_imm_shares(
+        imm_pctiles, num_periods, E, S, income_shares
+    )
+
+    # Use the aggregate fixed distribution after fixper, matching the
+    # age-only steady-state logic already computed above.
+    target_pop = np.array(omega_path_lev, dtype=float, copy=True)
+    fixed_full_dist = omega_SSfx / omega_SSfx.sum()
+    if fixper < num_periods:
+        total_pop = target_pop[fixper].sum()
+        target_pop[fixper] = total_pop * fixed_full_dist
+        for t in range(fixper + 1, num_periods):
+            total_pop *= 1 + g_n_SS
+            target_pop[t] = total_pop * fixed_full_dist
+
+    pop_path_J = np.zeros((num_periods, totpers, J))
+    fert_rates_J = np.zeros((num_periods, totpers, J))
+    mort_rates_J = np.zeros((num_periods, totpers, J))
+    imm_rates_J = np.zeros((num_periods, totpers, J))
+    infmort_rates_J = np.zeros((num_periods, J))
+    pop_path_J[0] = target_pop[0, :, None] * income_shares.reshape(1, J)
+    fixed_pop_dist_J = None
+
+    for t in range(num_periods):
+        pop_t_J = pop_path_J[t]
+        age_weights = _within_age_weights(pop_t_J, income_shares)
+        fert_rates_J[t] = _mean_preserving_logit_rates(
+            fert_rates[t], fert_slopes[t], age_weights, pct_midpoints
+        )
+        mort_rates_J[t] = _mean_preserving_logit_rates(
+            mort_rates[t], mort_slopes[t], age_weights, pct_midpoints
+        )
+        infmort_rates_J[t] = _mean_preserving_logit_rates(
+            np.array([infmort_rates[t]]),
+            np.array([infmort_slopes[t]]),
+            income_shares.reshape(1, J),
+            pct_midpoints,
+        )[0]
+
+        births = (fert_rates_J[t] * pop_t_J).sum()
+        newborns = births * income_shares
+        pre_imm_pop = np.zeros((totpers, J))
+        pre_imm_pop[0] = (1 - infmort_rates_J[t]) * newborns
+        pre_imm_pop[1:] = pop_t_J[:-1] * (1 - mort_rates_J[t, :-1])
+
+        if t + 1 < num_periods:
+            target_next = target_pop[t + 1]
+        else:
+            newborns_agg = np.dot(fert_rates[t], target_pop[t])
+            target_next = np.zeros(totpers)
+            target_next[0] = (1 - infmort_rates[t]) * newborns_agg + imm_rates[
+                t, 0
+            ] * target_pop[t, 0]
+            target_next[1:] = (
+                target_pop[t, :-1] * (1 - mort_rates[t, :-1])
+                + imm_rates[t, 1:] * target_pop[t, 1:]
+            )
+
+        if t == fixper:
+            fixed_pop_dist_J = pop_t_J / pop_t_J.sum()
+
+        if fixed_pop_dist_J is not None and t >= fixper:
+            target_next_J = fixed_pop_dist_J * target_next.sum()
+            imm_flow_J = target_next_J - pre_imm_pop
+            pop_next_J = target_next_J
+        else:
+            imm_flow = target_next - pre_imm_pop.sum(axis=1)
+            imm_flow_J = imm_flow[:, None] * imm_shares[t]
+            pop_next_J = pre_imm_pop + imm_flow_J
+
+        imm_rates_J[t] = np.divide(
+            imm_flow_J,
+            pop_t_J,
+            out=np.zeros_like(imm_flow_J),
+            where=pop_t_J != 0,
+        )
+
+        if t + 1 < num_periods:
+            if np.any(pop_next_J < -1e-8):
+                raise ValueError(
+                    "Income-specific demographic inputs imply a negative "
+                    "population in at least one age-income cell."
+                )
+            pop_path_J[t + 1] = np.maximum(pop_next_J, 0.0)
+
+    active_pop_J = pop_path_J[:, E:, :]
+    omega_path_S_J = active_pop_J / active_pop_J.sum(axis=(1, 2)).reshape(
+        num_periods, 1, 1
+    )
+    omega_SS_J = omega_path_S_J[fixper]
+
+    assert np.allclose(omega_path_S_J.sum(axis=2), omega_path_S)
+    assert np.allclose(omega_SS_J.sum(axis=1), omega_SS)
+
+    return {
+        "omega_path_S": omega_path_S_J,
+        "omega_SS": omega_SS_J,
+        "mort_rates_S": mort_rates_J[:, E:, :],
+        "imm_rates_mat": imm_rates_J[:, E:, :],
+    }
+
+
 def get_pop_objs(
     E=20,
     S=80,
@@ -720,7 +1467,11 @@ def get_pop_objs(
     imm_rates=None,
     infer_pop=False,
     pop_dist=None,
-    pre_pop_dist=None,
+    fert_gradient=None,
+    mort_gradient=None,
+    infmort_gradient=None,
+    imm_pctiles=None,
+    income_percentiles=None,
     country_id=UN_COUNTRY_CODE,
     initial_data_year=START_YEAR - 1,
     final_data_year=START_YEAR + 2,
@@ -751,9 +1502,25 @@ def get_pop_objs(
         infer_pop (bool): =True if want to infer the population
         pop_dist (array_like): user provided population distribution,
             dimensions are T0+1 x E+S
-        pre_pop_dist (array_like): user provided population distribution
-            for the year before the initial year for calibration,
-            length E+S
+        fert_gradient (array_like): user provided fertility rate gradient,
+            dimensions are S, represents the log-odds slope in the
+            fertility rate
+            per percentile of the lifetime income distribution.
+        mort_gradient (array_like): user provided mortality rate gradient,
+            dimensions are S, represents the log-odds slope in the
+            mortality rate
+            per percentile of the lifetime income distribution.
+        infmort_gradient (array_like): user provided infant mortality
+            rate gradient, dimensions are S, represents the log-odds
+            slope in the infant mortality rate per percentile of the
+            lifetime income distribution.
+        imm_pctiles (array_like): user provided lifetime income distribution
+            for new immigrants, shape is num_per x S x J, where num_per
+            is the number of years between initial and final_data_year
+        income_percentiles (array_like): user provided income percentiles,
+            dimensions are J, the number of lifetime income groups;
+            defaults to a single income group (J=1) when no
+            income-specific inputs are supplied
         country_id (str): country id for UN data
         initial_data_year (int): initial year of data to use
             (not relevant if have user provided data)
@@ -780,9 +1547,12 @@ def get_pop_objs(
                 path, length T + S
 
     """
+    start_data_year = initial_data_year - 1  # grab data from one year
+    T = T + 1  # add one period to T to account for period -1 pop
+    # before initial so have pre-start year population distribution
     # TODO: this function does not generalize with T.
     # It assumes one model period is equal to one calendar year in the
-    # time dimesion (it does adjust for S, however)
+    # time dimension (it does adjust for S, however)
     T0 = (
         final_data_year - initial_data_year + 1
     )  # number of periods until constant fertility and mortality rates
@@ -793,8 +1563,8 @@ def get_pop_objs(
         final_data_year,
     )
     assert E + S <= max_age - min_age + 1
-    assert initial_data_year >= 2011 and initial_data_year <= 2100 - 1
-    assert final_data_year >= 2011 and final_data_year <= 2100 - 1
+    assert initial_data_year >= 2012 and initial_data_year <= 2100 - 1
+    assert final_data_year >= 2012 and final_data_year <= 2100 - 1
     # Ensure that the last year of data used is before SS transition assumed
     # Really, it will need to be well before this
     assert final_data_year > initial_data_year
@@ -815,7 +1585,7 @@ def get_pop_objs(
             min_age,
             max_age,
             country_id,
-            initial_data_year,
+            start_data_year,
             final_data_year,
             download_path=download_path,
         )
@@ -844,7 +1614,7 @@ def get_pop_objs(
             min_age,
             max_age,
             country_id,
-            initial_data_year,
+            start_data_year,
             final_data_year,
             download_path=download_path,
         )
@@ -882,7 +1652,7 @@ def get_pop_objs(
                 initial_pop = pop_dist[0, :].reshape(1, pop_dist.shape[-1])
             else:
                 initial_pop = None
-            pop_2D, pre_pop = get_pop(
+            pop_2D = get_pop(
                 E,
                 S,
                 min_age,
@@ -893,40 +1663,32 @@ def get_pop_objs(
                 infmort_rates,
                 imm_rates,
                 initial_pop,
-                pre_pop_dist,
                 country_id,
-                initial_data_year,
+                start_data_year,
                 final_data_year,
                 download_path=download_path,
             )
         else:
-            pop_2D, pre_pop = get_pop(
+            pop_2D = get_pop(
                 E,
                 S,
                 min_age,
                 max_age,
                 country_id=country_id,
-                start_year=initial_data_year,
+                start_year=start_data_year,
                 end_year=final_data_year,
                 download_path=download_path,
             )
     else:
         # Check first dims of pop_dist as input by user
-        print("T0 = ", T0)
         assert pop_dist.shape[0] == T0 + 1  # population needs to be
         # one year longer in order to find immigration rates
         assert pop_dist.shape[-1] == E + S
-        # Check that pre_pop specified
-        assert pre_pop_dist is not None
-        assert pre_pop_dist.shape[0] == pop_dist.shape[1]
-        pre_pop = pre_pop_dist
         # Create 2D array of population distribution
         pop_2D = np.zeros((T0 + 1, E + S))
         for t in range(T0 + 1):
             pop_EpS = pop_rebin(pop_dist[t, :], E + S)
             pop_2D[t, :] = pop_EpS
-    # Get percentage distribution for S periods for pre-TP period
-    pre_pop_EpS = pop_rebin(pre_pop, E + S)
     # Get immigration rates if not provided
     if imm_rates is None:
         imm_rates_orig = get_imm_rates(
@@ -938,7 +1700,7 @@ def get_pop_objs(
             infmort_rates,
             pop_2D,
             country_id,
-            initial_data_year,
+            start_data_year,
             final_data_year,
             download_path=download_path,
         )
@@ -962,26 +1724,13 @@ def get_pop_objs(
     )
     # If the population distribution was given, check it for consistency
     # with the fertility, mortality, and immigration rates
-    # if pop_dist is not None and not infer_pop:
-    # len_pop_dist = pop_dist.shape[0]
-    # pop_counter_2D = np.zeros((len_pop_dist, E + S))
     len_pop_dist = pop_2D.shape[0]
     pop_counter_2D = np.zeros((len_pop_dist, E + S))
     # set initial population distribution in the counterfactual to
     # the first year of the user provided distribution
-    # pop_counter_2D[0, :] = pop_dist[0, :]
     pop_counter_2D[0, :] = pop_2D[0, :]
     for t in range(1, len_pop_dist):
         # find newborns next period
-        # newborns = np.dot(fert_rates[t - 1, :], pop_counter_2D[t - 1, :])
-
-        # pop_counter_2D[t, 0] = (
-        #     1 - infmort_rates[t - 1]
-        # ) * newborns + imm_rates[t - 1, 0] * pop_counter_2D[t - 1, 0]
-        # pop_counter_2D[t, 1:] = (
-        #     pop_counter_2D[t - 1, :-1] * (1 - mort_rates[t - 1, :-1])
-        #     + pop_counter_2D[t - 1, 1:] * imm_rates_orig[t - 1, 1:]
-        # )
         newborns = np.dot(fert_rates[t - 1, :], pop_counter_2D[t - 1, :])
 
         pop_counter_2D[t, 0] = (
@@ -992,98 +1741,7 @@ def get_pop_objs(
             + pop_counter_2D[t - 1, 1:] * imm_rates_orig[t - 1, 1:]
         )
     # Check that counterfactual pop dist is close to pop dist given
-    # assert np.allclose(pop_counter_2D, pop_dist)
     assert np.allclose(pop_counter_2D, pop_2D)
-
-    # """"
-    # CHANGE - in OG-Core, we are implicitly assuming pre-TP rates of
-    # mortality,
-    # fertility, and immigration are the same as the period 0 rates.
-
-    # So let's just infer the pre-pop_dist from those.
-    # """
-    # pop1 = pop_2D[0, :]
-    # fert0 = fert_rates[0, :]
-    # mort0 = mort_rates[0, :]
-    # infmort0 = infmort_rates[0]
-    # imm0 = imm_rates_orig[0, :]
-    # pre_pop_guess = pop1.copy()
-
-    # # I can't solve this analytically, so set up a system of equation
-    # # to solve
-    # def pre_pop_solve(pre_pop_guess, pop1, fert0, mort0, infmort0, imm0):
-    #     pre_pop = pre_pop_guess
-    #     errors = np.zeros(E + S)
-    #     errors[0] = pop1[0] - (
-    #         (1 - infmort0) * (fert0 * pre_pop).sum() + imm0[0] * pre_pop[0]
-    #     )
-    #     errors[1:] = pop1[1:] - (
-    #         pre_pop[:-1] * (1 - mort0[:-1]) + pre_pop[1:] * imm0[1:]
-    #     )
-    #     # print("Max error = ", np.abs(errors).max())
-    #     return errors
-
-    # opt_res = opt.root(
-    #     pre_pop_solve,
-    #     pre_pop_guess,
-    #     args=(pop1, fert0, mort0, infmort0, imm0),
-    #     method="lm",
-    # )
-    # pre_pop = opt_res.x
-    # print(
-    #     "Success? ",
-    #     opt_res.success,
-    #     ", Max diff = ",
-    #     np.abs(opt_res.fun).max(),
-    # )
-    # pre_pop_EpS = pop_rebin(pre_pop, E + S)
-
-    # # Check result
-    # initial_pop_counter = np.zeros(E + S)
-    # newborns = (fert_rates[0, :] * pre_pop[:]).sum()
-    # initial_pop_counter[0] = (
-    #     1 - infmort_rates[0]
-    # ) * newborns + imm_rates_orig[0, 0] * pre_pop[0]
-    # initial_pop_counter[1:] = (
-    #     pre_pop[:-1] * (1 - mort_rates[0, :-1])
-    #     + pre_pop[1:] * imm_rates_orig[0, 1:]
-    # )
-    # # Test that using pre pop get to pop in period 1
-    # print("Max diff = ", np.abs(pop_2D[0, :] - initial_pop_counter).max())
-    # # assert np.allclose(initial_pop_counter, pop_2D[0, :])
-
-    """
-    NEW CODE - use the actual UN historical data instead of solving backwards
-    """
-    # Get percentage distribution for S periods for pre-TP period
-    # Use the actual UN historical data instead of solving backwards
-    # pre_pop_EpS = pop_rebin(pre_pop, E + S) -- this assignment is
-    # above on line 924, but keep for clarity
-
-    # Check result
-    # Verify that the UN pre-period data is reasonably consistent
-    # with the period 0 population using the demographic transition equations
-    initial_pop_counter = np.zeros(E + S)
-    newborns = (fert_rates[0, :] * pre_pop_EpS[:]).sum()
-    initial_pop_counter[0] = (
-        1 - infmort_rates[0]
-    ) * newborns + imm_rates_orig[0, 0] * pre_pop_EpS[0]
-    initial_pop_counter[1:] = (
-        pre_pop_EpS[:-1] * (1 - mort_rates[0, :-1])
-        + pre_pop_EpS[1:] * imm_rates_orig[0, 1:]
-    )
-
-    max_diff = np.abs(pop_2D[0, :] - initial_pop_counter).max()
-    print("Pre-period population verification: Max diff = ", max_diff)
-
-    if max_diff > 100_000:
-        print(
-            "WARNING: Large difference between UN pre-period population "
-            + "and period 0 population ({:.2f}). ".format(max_diff)
-            + "This may indicate inconsistencies in the data or "
-            + "immigration rate calculations, but using UN historical "
-            + "data as it is more reliable than backward-solved estimates."
-        )
 
     # Create the transition matrix for the population distribution
     # from T0 going forward (i.e., past when we have data on forecasts)
@@ -1118,7 +1776,8 @@ def get_pop_objs(
     # steady-state distribution by adjusting immigration rates, holding
     # constant mortality, fertility, and SS growth rates
     imm_tol = 1e-14
-    fixper = int(1.5 * S + T0)
+    fixper = int(1.5 * S)
+    assert fixper > T0  # ensure that we are fixing period after data
     omega_SSfx = omega_path_lev[fixper, :] / omega_path_lev[fixper, :].sum()
     imm_objs = (
         fert_rates[fixper, :],
@@ -1143,25 +1802,19 @@ def get_pop_objs(
         omega_path_S[fixper, :].reshape((1, S)), (T + S - fixper, 1)
     )
     g_n_path = np.zeros(T + S)
-    g_n_path[1:] = (
+    g_n_path[:-1] = (
         omega_path_lev[1:, -S:].sum(axis=1)
         - omega_path_lev[:-1, -S:].sum(axis=1)
     ) / omega_path_lev[:-1, -S:].sum(axis=1)
-    g_n_path[0] = (
-        omega_path_lev[0, -S:].sum() - pre_pop_EpS[-S:].sum()
-    ) / pre_pop_EpS[-S:].sum()
     g_n_path[fixper + 1 :] = g_n_SS
-    omega_S_preTP = pre_pop_EpS[-S:] / pre_pop_EpS[-S:].sum()
-    imm_rates_mat = np.concatenate(
+    imm_rates_full = np.concatenate(
         (
-            imm_rates_orig[:fixper, E:],
-            np.tile(
-                imm_rates_adj[E:].reshape(1, S),
-                (T + S - fixper, 1),
-            ),
+            imm_rates_orig[:fixper, :],
+            np.tile(imm_rates_adj.reshape(1, E + S), (T + S - fixper, 1)),
         ),
         axis=0,
     )
+    imm_rates_mat = imm_rates_full[:, E:]
 
     if GraphDiag:
         # Check whether original SS population distribution is close to
@@ -1308,15 +1961,39 @@ def get_pop_objs(
             path=OUTPUT_DIR,
         )
 
+    pop_objs = expand_pop_obj_J(
+        omega_path_lev,
+        omega_path_S,
+        omega_SSfx,
+        fert_rates,
+        mort_rates,
+        infmort_rates,
+        imm_rates_full,
+        mort_rates_S,
+        imm_rates_mat,
+        E,
+        S,
+        g_n_SS,
+        fixper,
+        income_percentiles=income_percentiles,
+        fert_gradient=fert_gradient,
+        mort_gradient=mort_gradient,
+        infmort_gradient=infmort_gradient,
+        imm_pctiles=imm_pctiles,
+    )
+
     # Return objects in a dictionary
     pop_dict = {
-        "omega": omega_path_S,
+        "omega": pop_objs["omega_path_S"][1:, :, :],
         "g_n_ss": g_n_SS,
-        "omega_SS": omega_SSfx[-S:] / omega_SSfx[-S:].sum(),
-        "rho": mort_rates_S,
-        "g_n": g_n_path,
-        "imm_rates": imm_rates_mat,
-        "omega_S_preTP": omega_S_preTP,
+        "omega_SS": pop_objs["omega_SS"],
+        "rho": pop_objs["mort_rates_S"][1:, :, :],
+        "g_n": g_n_path[1:],
+        "imm_rates": pop_objs["imm_rates_mat"][1:, :, :],
+        "omega_S_preTP": pop_objs["omega_path_S"][0, :, :],
+        "imm_rates_preTP": pop_objs["imm_rates_mat"][0, :, :],
+        "rho_preTP": pop_objs["mort_rates_S"][0, :, :],
+        "g_n_preTP": g_n_path[0],
     }
 
     return pop_dict
