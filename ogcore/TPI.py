@@ -1203,20 +1203,28 @@ def run_TPI(p, client=None):
         B[1 : p.T] = aggr.get_B(bmat_splus1[: p.T], p, "TPI", False)[: p.T - 1]
         w_open = firm.get_w_from_r(p.world_int_rate[: p.T], p, "TPI")
 
-        # Find output, labor demand, capital demand for M-1 industries
+        # Find output, labor demand, capital demand for M industries
         L_vec = np.zeros((p.T, p.M))
         K_vec = np.zeros((p.T, p.M))
         C_vec = np.zeros((p.T, p.I))
         K_demand_open_vec = np.zeros((p.T, p.M))
         for i_ind in range(p.I):
             C_vec[:, i_ind] = aggr.get_C(c_i[: p.T, i_ind, :, :], p, "TPI")
-        Y_vec = (
+        C_m_vec = (
             np.tile(p.io_matrix[: p.I, :].reshape(1, p.I, p.M), (p.T, 1, 1))
             * np.tile(C_vec[: p.T, :].reshape(p.T, p.I, 1), (1, 1, p.M))
         ).sum(axis=1)
-        Y_vec += G[: p.T, None] * p.io_matrix[p.I, :]
-        Y_vec += I_g[: p.T, None] * p.io_matrix[p.I + 1, :]
-        for m_ind in range(p.M - 1):
+        G_vec = G[: p.T, None] * p.io_matrix[p.I, :]
+        I_g_vec = I_g[: p.T, None] * p.io_matrix[p.I + 1, :]
+        K_d = B - D_d
+        I_d = aggr.get_I(
+                bmat_splus1[: p.T], K_d[1 : p.T + 1], K_d[: p.T], p, "TPI"
+            )
+        I_d_vec = I_d[:p.T, None] * p.io_matrix[p.I + 2, :]
+        Y_vec = (
+            C_m_vec + G_vec + I_g_vec + I_d_vec
+        ).sum(axis=1)
+        for m_ind in range(p.M):
             KYrat_m = firm.get_KY_ratio(
                 r[: p.T], p_m[: p.T, :], p, "TPI", m_ind
             )
@@ -1233,27 +1241,12 @@ def run_TPI(p, client=None):
                 m_ind,
             )
 
-        # Find output, labor demand, capital demand for last industry
-        L_M = np.maximum(
-            np.ones(p.T) * 0.001, L[: p.T] - L_vec[: p.T, :].sum(-1)
-        )  # make sure L_M > 0
-        K_demand_open_vec[:, -1] = firm.get_K(
-            p.world_int_rate[: p.T], w_open[: p.T], L_M[: p.T], p, "TPI", -1
-        )
+        # Find capital splits for domestic and foreign capital
         K[: p.T], K_d[: p.T], K_f[: p.T] = aggr.get_K_splits(
             B[: p.T],
             K_demand_open_vec[: p.T, :].sum(-1),
             D_d[: p.T],
             p.zeta_K[: p.T],
-        )
-        K_M = np.maximum(
-            np.ones(p.T) * 0.001, K[: p.T] - K_vec[: p.T, :].sum(-1)
-        )  # make sure K_M > 0
-
-        L_vec[:, -1] = L_M
-        K_vec[:, -1] = K_M
-        Y_vec[:, -1] = firm.get_Y(
-            K_vec[: p.T, -1], K_g[: p.T], L_vec[: p.T, -1], p, "TPI", -1
         )
 
         Y = (p_m[: p.T, :] * Y_vec[: p.T, :]).sum(-1)

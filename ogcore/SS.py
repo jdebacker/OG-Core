@@ -492,16 +492,25 @@ def inner_loop(outer_loop_vars, p, client, scattered_p=None):
     L_vec = np.zeros(p.M)
     K_vec = np.zeros(p.M)
     C_vec = np.zeros(p.I)
+    K_d = B - D_d
     K_demand_open_vec = np.zeros(p.M)
     for i_ind in range(p.I):
         C_vec[i_ind] = aggr.get_C(c_i[i_ind, :, :], p, "SS").item()
     I_g = fiscal.get_I_g(Y, Ig_baseline, p, "SS")
+    I_g_vec = p.io_matrix[p.I + 1, :] * I_g
+    I_d = aggr.get_I(b_splus1, K_d, K_d, p, "SS")
+    I_d_vec = p.io_matrix[p.I + 2, :] * I_d
+    G_vec = p.io_matrix[p.I, :] * G
+    C_m_vec = np.dot(p.io_matrix[: p.I, :].T, C_vec)
+    I_g_vec = p.io_matrix[p.I + 1, :] * I_g
     Y_vec = (
-        np.dot(p.io_matrix[: p.I, :].T, C_vec)
-        + p.io_matrix[p.I, :] * G
-        + p.io_matrix[p.I + 1, :] * I_g
+        C_m_vec
+        + G_vec
+        + I_g_vec
+        + I_d_vec
     )
-    for m_ind in range(p.M - 1):
+    # Solve for capital and labor demand for each industry
+    for m_ind in range(p.M):
         KYrat_m = firm.get_KY_ratio(r, p_m, p, "SS", m_ind)
         K_vec[m_ind] = KYrat_m * Y_vec[m_ind]
         L_vec[m_ind] = firm.solve_L(
@@ -510,21 +519,12 @@ def inner_loop(outer_loop_vars, p, client, scattered_p=None):
         K_demand_open_vec[m_ind] = firm.get_K(
             p.world_int_rate[-1], w_open, L_vec[m_ind], p, "SS", m_ind
         )
-    # Find output, labor demand, capital demand for industry M
-    L_M = max(0.001, L - L_vec.sum())  # make sure L_M > 0
-    K_demand_open_vec[-1] = firm.get_K(
-        p.world_int_rate[-1], w_open, L_M, p, "SS", -1
-    )
+    # Find capital splits
     K, K_d, K_f = aggr.get_K_splits(
         B, K_demand_open_vec.sum(), D_d, p.zeta_K[-1]
     )
-    K_M = max(0.001, K - K_vec.sum())  # make sure K_M > 0
-    L_vec[-1] = L_M
-    K_vec[-1] = K_M
-    Y_vec[-1] = firm.get_Y(K_vec[-1], K_g, L_vec[-1], p, "SS", -1)
     # Find GDP
     Y = (p_m * Y_vec).sum()
-    I_g = fiscal.get_I_g(Y, Ig_baseline, p, "SS")
     K_g = fiscal.get_K_g(0, I_g, p, "SS")
     if p.zeta_K[-1] == 1.0:
         new_r = p.world_int_rate[-1]
@@ -672,13 +672,6 @@ def inner_loop(outer_loop_vars, p, client, scattered_p=None):
         p,
         "SS",
     )
-
-    G_vec = p.io_matrix[p.I, :] * G
-    C_m_vec = np.dot(p.io_matrix[: p.I, :].T, C_vec)
-    I_d_vec = np.zeros(p.M)
-    I_d = aggr.get_I(b_splus1, K_d, K_d, p, "SS")
-    I_d_vec[-1] = I_d
-    I_g_vec = p.io_matrix[p.I + 1, :] * I_g
     debt_service_f = fiscal.get_debt_service_f(r_p, D_f)
     net_capital_outflows = aggr.get_capital_outflows(
         r_p, K_f, new_borrowing_f, debt_service_f, p
